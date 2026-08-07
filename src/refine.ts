@@ -18,7 +18,7 @@
 // model spend is a tradeoff the roadmap keeps as a separate decision).
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { applyDeltas, exportDurable, getState, REFINE_ENTRY } from "./store.js";
+import { applyDeltas, exportDurable, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer } from "./proposer.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
@@ -82,7 +82,9 @@ export async function runRefine(
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback);
-  const result = await proposer.propose({ evidence, state: getState(), lookback });
+  // Pass a defensive copy: proposers are a public extension point and must not
+  // be able to mutate the live store outside applyDeltas (no audit / no rollback).
+  const result = await proposer.propose({ evidence, state: snapshotState(), lookback });
   const proposedDeltas = result.deltas ?? [];
 
   let applied = 0;

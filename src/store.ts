@@ -32,6 +32,13 @@ export function getState(): HarnessState {
   return state;
 }
 
+/** A defensive deep-enough copy of current state (items are flat). Use when
+ *  handing state to untrusted/external code (e.g. a DeltaProposer) so it cannot
+ *  mutate the live store outside applyDeltas. */
+export function snapshotState(): HarnessState {
+  return { items: state.items.map((i) => ({ ...i })) };
+}
+
 export function listItems(kind?: ComponentKind): HarnessItem[] {
   return kind ? state.items.filter((i) => i.kind === kind) : state.items;
 }

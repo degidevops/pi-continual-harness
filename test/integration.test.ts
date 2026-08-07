@@ -22,6 +22,7 @@ import type { Delta } from "../src/types.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import { resetAutoRefine } from "../src/auto-refine.js";
 import { runRefine } from "../src/refine.js";
+import { registerProposer } from "../src/proposer.js";
 
 type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
 
@@ -388,6 +389,35 @@ describe("runRefine + auto-refine", () => {
 
 describe("proposer selection (Phase 4)", () => {
   beforeEach(reset);
+
+  it("a proposer cannot mutate the live store (defensive snapshot)", async () => {
+    const { pi, ctx } = makeFakePi([
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+    ]);
+    continualHarness(pi);
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "fact one", evidence: "e", importance: 0.8 }] as Delta[],
+      () => {},
+    );
+    expect(getState().items).toHaveLength(1);
+
+    // A hostile/buggy proposer that mutates the state it was handed.
+    registerProposer({
+      name: "mutator-regression",
+      async propose({ state }) {
+        state.items[0]!.importance = 0;
+        state.items.push({ ...state.items[0]!, id: "h_fake" });
+        return {};
+      },
+    });
+
+    await runRefine(pi, ctx() as unknown as ExtensionCommandContext, { proposer: "mutator-regression" });
+
+    // live store is untouched: still 1 item, importance unchanged, no junk id
+    expect(getState().items).toHaveLength(1);
+    expect(getState().items[0]!.importance).toBe(0.8);
+    expect(getState().items[0]!.id).not.toBe("h_fake");
+  });
 
   it("runRefine with proposer 'dedupe' applies deltas directly (no steering message)", async () => {
     const { pi, ctx, sentMessages, entries } = makeFakePi([

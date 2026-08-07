@@ -27,7 +27,8 @@ import type { Delta, HarnessItem, HarnessState } from "./types.js";
 export interface ProposeInput {
   /** Recent trajectory evidence (the same string /refine gathers). */
   evidence: string;
-  /** Current harness state (a snapshot; never mutated by the proposer). */
+  /** Current harness state as a defensive copy; mutations are ignored — use
+   *  the returned deltas to change state. */
   state: HarnessState;
   /** Lookback window in turns. */
   lookback: number;
@@ -120,7 +121,6 @@ export const dedupeProposer: DeltaProposer = {
   async propose({ state }): Promise<ProposeResult> {
     const ordered = state.items
       .filter((i) => i.active)
-      .slice()
       .sort((a, b) => b.importance - a.importance);
     const keepers: HarnessItem[] = [];
     const proposals: ProposedDelta[] = [];
