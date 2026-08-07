@@ -16,8 +16,9 @@ with:
 The durable markdown file (`.pi/harness-state.md`) is the composition seam,
 and it is **two-way**: `/refine --commit` and `/harness export` write it;
 `/harness import` parses it back and merges into the live store (offline edits
-win on conflict), so refinements pi-reflect makes flow back online. pi-mem
-ingestion is a future/manual step.
+win on conflict), so refinements pi-reflect makes flow back online. `/harness push-mem`
+pushes active items into pi-mem's semantic store (see
+[Composing with pi-mem](#composing-with-pi-mem)).
 
 ## Why
 
@@ -40,7 +41,7 @@ leaving offline and storage to the packages that already do them well.
 ## Install
 
 ```
-pi install git:github.com/<owner>/pi-continual-harness
+pi install npm:pi-continual-harness
 ```
 
 Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
@@ -63,6 +64,7 @@ Durable I/O (round-trip with pi-reflect):
 /harness prune [--decay <days>]  # drop items below the importance floor
 /harness keep <id>               # nudge importance up (+0.1)
 /harness drop <id>               # nudge importance down (−0.1)
+/harness push-mem [--all|--kind <kind>]  # persist active items to pi-mem (save_memory)
 ```
 
 `import` reconciles the file into the live store: items whose id matches an
@@ -84,6 +86,24 @@ The model-facing tools:
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
 
+## Composing with pi-mem
+
+`/harness push-mem` copies active harness items into
+[pi-mem](https://github.com/georgebashi/pi-mem)'s semantic memory store, so they
+become searchable across sessions. It works by **steering** the agent to call
+pi-mem's `save_memory` tool — there is **no dependency** on pi-mem: it is a
+soft-fail composition. If pi-mem (or any memory tool) is not installed, the
+agent tells you so rather than fabricating one.
+
+```
+pi install npm:pi-mem        # optional companion
+```
+
+By default only **memory**-kind items are pushed (the clean 1:1 mapping); use
+`--all` for every active item or `--kind prompt|skill|subagent` for a specific
+kind. The harness store itself is unchanged by a push — pi-mem gets a separate
+copy.
+
 ## Configuration
 
 Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
@@ -93,7 +113,8 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "durableScope": "global",
   "proposer": "steering",
   "remindRefine": { "enabled": false, "everyTurns": 50 },
-  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false }
+  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false },
+  "outcomeImportance": { "enabled": false, "bump": 0.03 }
 }
 ```
 
@@ -109,10 +130,19 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   informational only — it never mutates state.
 - **`autoRefine`** — opt-in autonomous self-improvement (**off by default**).
   When `enabled`, the agent runs `/refine` itself every `everyTurns` turns
-  (default 100). This is the package's one autonomous-self-mutation path: it
-  reuses the exact `/refine` routine (audited `REFINE_ENTRY` tagged
-  `source: "auto"`, branch-local, `/tree` rollback) and notifies before firing.
-  `commit: true` also flushes durable state on each run.
+  (default 100). It is one of the package's opt-in autonomous paths: it reuses
+  the exact `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`,
+  branch-local, `/tree` rollback) and notifies before firing. `commit: true`
+  also flushes durable state on each run.
+- **`outcomeImportance`** — opt-in autonomous **promotion** loop (**off by
+  default**). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
+  the importance of any active item the agent cited by its `[h_xxxx]` tag in the
+  turn's output. Referenced items gain importance and get their `updatedAt`
+  touched (so they survive time-based decay); ignored items keep decaying. This
+  is the package's second opt-in autonomous path — promotion only, never
+  deletes, persisted/branchable like `harness_mutate`. Autonomous demotion from
+  outcomes is intentionally NOT done (high false-positive); use `/harness drop`,
+  `prune --decay`, or the `dedupe` proposer for that.
 
 ## How it works
 
@@ -180,16 +210,19 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 
 ## Status
 
-0.3.x. Implemented:
+0.5.x. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
 - Two-way durable round-trip with pi-reflect (`/harness import|export|status`).
 - Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
   <id>`.
+- **pi-mem composition**: `/harness push-mem [--all|--kind]` steers the agent
+  to persist active items into pi-mem (soft-fail; no dependency).
 - Optional config (`~/.pi/agent/harness.json`): project-local durable scope, an
-  opt-in `turn_end` reminder, and opt-in `turn_end` auto-refine (the one
-  autonomous-self-mutation path; off by default).
+  opt-in `turn_end` reminder, opt-in `turn_end` auto-refine, and an opt-in
+  `turn_end` outcome-importance loop — the package's two opt-in autonomous
+  paths (both off by default).
 - **Pluggable delta proposers** with a registry: `steering` (default) and
   `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
 
@@ -197,8 +230,10 @@ Open extension points (see `docs/ROADMAP.md`):
 
 - A dedicated-model proposer (interface ready; the hidden-model-spend tradeoff
   is a separate decision).
-- pi-mem ingestion of the durable export.
-- Outcome-driven importance (currently model-set + manual nudges).
+- Correction-side outcome signals (promotion is shipped; autonomous demotion
+  is high-false-positive, so it is served by `/harness drop`, `prune --decay`,
+  and the `dedupe` proposer — a fuzzy `corrections` proposer is the natural
+  future extension).
 
 ## License
 

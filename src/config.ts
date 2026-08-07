@@ -17,6 +17,8 @@ import { DEFAULT_DURABLE_PATH } from "./store.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
+/** Default per-reference importance bump for the opt-in outcome loop. */
+export const DEFAULT_REF_BUMP = 0.03;
 
 export interface HarnessConfig {
   durableScope?: "global" | "project";
@@ -31,6 +33,12 @@ export interface HarnessConfig {
   };
   /** Delta proposer name (see proposer.ts registry). Defaults to "steering". */
   proposer?: string;
+  /** Opt-in turn_end outcome loop: promote importance of items the agent
+   *  references by their [h_xxxx] tag. Off by default (autonomous mutation). */
+  outcomeImportance?: {
+    enabled?: boolean;
+    bump?: number;
+  };
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
@@ -38,6 +46,7 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
   proposer: "steering",
+  outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
 };
 
 export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
@@ -58,6 +67,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       commit: over.autoRefine?.commit ?? false,
     },
     proposer: over.proposer ?? "steering",
+    outcomeImportance: {
+      enabled: over.outcomeImportance?.enabled ?? false,
+      bump: over.outcomeImportance?.bump ?? DEFAULT_REF_BUMP,
+    },
   };
 }
 

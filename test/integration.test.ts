@@ -460,3 +460,71 @@ describe("proposer selection (Phase 4)", () => {
     expect(getState().items).toHaveLength(1);
   });
 });
+
+// Phase 5 / E: /harness push-mem composes with pi-mem via a steering message.
+// No dependency on pi-mem — the message is tool-agnostic and soft-fails if the
+// agent has no memory tool.
+describe("/harness push-mem (Phase 5)", () => {
+  beforeEach(reset);
+
+  it("steers the agent to save_memory for each active memory item", async () => {
+    const { pi, tools, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [
+        { op: "create", kind: "memory", content: "use PostgreSQL", evidence: "decided in design review" },
+        { op: "create", kind: "prompt", content: "always cite evidence", evidence: "e", importance: 0.8 },
+      ] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    await commands.get("harness")!.handler("push-mem", ctx());
+
+    // default scope = memory kind only → only the one memory item is pushed
+    expect(sentMessages).toHaveLength(1);
+    const msg = sentMessages[0]!;
+    expect(msg).toContain("save_memory");
+    expect(msg).toContain("use PostgreSQL");
+    expect(msg).toContain("decided in design review");
+    // the prompt-kind item is NOT in the default (memory-only) push
+    expect(msg).not.toContain("always cite evidence");
+    // graceful guidance when pi-mem may be absent
+    expect(msg).toContain("pi install npm:pi-mem");
+    expect(notifications.some((n) => /Steering agent to persist 1/.test(n.msg))).toBe(true);
+  });
+
+  it("--all pushes every active item regardless of kind", async () => {
+    const { pi, tools, commands, ctx, sentMessages } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [
+        { op: "create", kind: "memory", content: "m1", evidence: "e" },
+        { op: "create", kind: "prompt", content: "p1", evidence: "e" },
+        { op: "create", kind: "skill", content: "s1", evidence: "e" },
+      ] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    await commands.get("harness")!.handler("push-mem --all", ctx());
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).toContain("m1");
+    expect(sentMessages[0]).toContain("p1");
+    expect(sentMessages[0]).toContain("s1");
+  });
+
+  it("notifies with a hint when there is nothing to push", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    await commands.get("harness")!.handler("push-mem", ctx());
+    expect(sentMessages).toHaveLength(0);
+    expect(notifications.some((n) => /No active items to push/.test(n.msg))).toBe(true);
+  });
+});

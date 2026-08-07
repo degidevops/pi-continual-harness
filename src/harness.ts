@@ -22,14 +22,15 @@ import {
   reconstructFromDurable,
 } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
-import type { ComponentKind } from "./types.js";
+import type { ComponentKind, HarnessItem } from "./types.js";
 
 export function registerHarness(pi: ExtensionAPI): void {
   pi.registerCommand("harness", {
     description:
       "Durable harness-state I/O + importance hygiene. Subcommands: " +
       "import [--prune] [path] · export [path] · status [path] · " +
-      "prune [--decay <days>] · keep <id> · drop <id>.",
+      "prune [--decay <days>] · keep <id> · drop <id> · " +
+      "push-mem [--all|--kind <kind>] (persist active items to pi-mem).",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "status").toLowerCase();
@@ -49,6 +50,9 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
         case "drop":
           await handleBump(pi, ctx, rest, -0.1, "drop");
+          return;
+        case "push-mem":
+          await handlePushMem(pi, ctx, rest);
           return;
         case "status":
         default:
@@ -158,6 +162,61 @@ async function handleBump(
   }
   const preview = item.content.length > 60 ? `${item.content.slice(0, 60)}…` : item.content;
   ctx.ui.notify(`${label}: "${preview}" → importance ${item.importance.toFixed(2)}`, "info");
+}
+
+/** Compose a steering message that asks the agent to persist the given active
+ *  items to long-term memory via a memory tool (pi-mem's save_memory).
+ *  Tool-agnostic: if no memory tool is present the agent says so; we never
+ *  fabricate one. No dependency on pi-mem — soft-fail composition. */
+function buildPushMemPrompt(items: HarnessItem[], scope: string): string {
+  const lines = [
+    `/harness push-mem — persist ${items.length} Continual Harness ${scope} to long-term memory`,
+    "",
+    "For EACH item below, call your memory tool (pi-mem exposes `save_memory`) once, mapping it as shown. This copies harness state into the semantic memory store so it is searchable across sessions.",
+    "",
+    "If you do NOT have a memory tool, do not fabricate one: tell the user to install pi-mem (`pi install npm:pi-mem`) and stop.",
+    "",
+  ];
+  items.forEach((i, n) => {
+    const title = `${i.id} ${i.content.slice(0, 48)}`;
+    const text = `${i.content} (evidence: ${i.evidence})`;
+    lines.push(
+      `${n + 1}. [${i.id}] ${i.content}`,
+      `   evidence: ${i.evidence}`,
+      `   → save_memory({ title: ${JSON.stringify(title)}, text: ${JSON.stringify(text)}, concepts: ["${i.kind}", "continual-harness"] })`,
+      "",
+    );
+  });
+  return lines.join("\n");
+}
+
+async function handlePushMem(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const all = rest.includes("--all");
+  const kindIdx = rest.indexOf("--kind");
+  let kind: ComponentKind | undefined;
+  if (kindIdx >= 0 && kindIdx + 1 < rest.length) {
+    const k = rest[kindIdx + 1]!;
+    if (k === "prompt" || k === "memory" || k === "skill" || k === "subagent") kind = k;
+  }
+  // Default: memory kind (the clean 1:1 mapping). --all or --kind override.
+  const items = getState().items.filter((i) =>
+    i.active && (all || (kind ? i.kind === kind : i.kind === "memory")),
+  );
+  if (items.length === 0) {
+    ctx.ui.notify(
+      "No active items to push (default: memory kind; use --all or --kind <kind>).",
+      "warning",
+    );
+    return;
+  }
+  const scope = all ? "item(s)" : `${kind ?? "memory"} item(s)`;
+  const msg = buildPushMemPrompt(items, scope);
+  pi.sendUserMessage(msg);
+  ctx.ui.notify(`Steering agent to persist ${items.length} ${scope} to pi-mem.`, "info");
 }
 
 async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {

@@ -59,14 +59,28 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   medium — mitigated by keeping the default behavior-preserving and the
   hidden-model-spend variant out of scope (documented as a future decision).
 
-## Phase 5 — composition + outcome loop
+## Phase 5 — DONE (main; unreleased)
 
-- **E. pi-mem push** — `/harness push-mem` steering → pi-mem `save_memory`;
-  soft-fail if pi-mem absent.
-- **B (phase 2). Outcome loop** — `turn_end` instrumentation nudges importance
-  from injected-item reference + correction signals.
-
-**Effort:** E ~30 lines; B-phase-2 medium-high. **Risk:** low (E), medium (B-2).
+- **E. pi-mem push** — `/harness push-mem [--all|--kind <kind>]` composes with
+  pi-mem by **steering** the agent to call pi-mem's `save_memory` for each
+  active item. No dependency on pi-mem — tool-agnostic and soft-fail (the agent
+  says "install pi-mem" if no memory tool is present). Default scope is the
+  memory kind (the clean 1:1 mapping); `--all` / `--kind` override. The harness
+  store is read-only for a push. **Effort:** ~55 lines. **Risk:** low.
+- **B (phase 2). Outcome loop** — opt-in `turn_end` reference-promotion hook
+  (`src/outcome.ts`) behind `outcomeImportance: { enabled, bump }` in config
+  (default off, 0.03). When the agent cites an active item by its `[h_xxxx]`
+  tag, importance is bumped (+bump, clamped, persisted via the same
+  `harness-state` entries → branch-local / `/tree` rollback) and `updatedAt` is
+  touched (so promoted items survive time-based decay). This closes the outcome
+  half of the fitness loop: useful items rise, ignored items keep decaying.
+  **Hard scope cut:** CORRECTION/demotion from outcomes is genuinely fuzzy and
+  high-false-positive, so it is intentionally NOT autonomized — demotion stays
+  with the existing audited primitives (`/harness drop`, `prune --decay`, the
+  `dedupe` proposer); a fuzzy `corrections` proposer is the natural future
+  extension via the Phase 4 registry.
+  **Effort:** ~95 lines. **Risk:** medium (autonomy) — mitigated by opt-in +
+  promotion-only + persist/rollback + visibility.
 
 ## Out of scope (compose instead)
 

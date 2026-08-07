@@ -13,6 +13,7 @@ import { registerRefine } from "./refine.js";
 import { registerTools } from "./tools.js";
 import { registerReminder } from "./remind.js";
 import { registerAutoRefine } from "./auto-refine.js";
+import { registerOutcome } from "./outcome.js";
 import { getState, reconstruct, STATE_ENTRY } from "./store.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
@@ -32,6 +33,10 @@ export default function continualHarness(pi: ExtensionAPI): void {
   registerRefine(pi);
   registerHarness(pi);
   registerReminder(pi);
+  // Register outcome BEFORE auto-refine: the test fake overwrites turn_end on
+  // each registration (Map.set), and the auto-refine integration tests assume
+  // auto-refine is the surviving handler. In production pi, all three run.
+  registerOutcome(pi);
   registerAutoRefine(pi);
 }
 
