@@ -1,19 +1,25 @@
-// /refine — the online optimizer. Manual only (no turn_end auto-trigger).
+// /refine — the online optimizer. Manual by default; opt-in turn_end
+// auto-refine lives in auto-refine.ts and reuses runRefine().
 //
 // Flow:
 //  1. Gather recent trajectory evidence from the current branch.
-//  2. Send a steering user message that asks the agent to propose evidence-
-//     backed CRUD deltas via harness_mutate (and to inspect state with
-//     harness_list first).
-//  3. The agent does the reasoning and calls the tools. Each accepted delta is
-//     recorded as a session entry, so /tree gives rollback for free.
+//  2. Hand evidence + current state to a pluggable DeltaProposer (proposer.ts).
+//     The default `steering` proposer returns a steering user message; the
+//     agent then reasons and calls harness_mutate. Rule-based/model proposers
+//     return deltas directly, which runRefine applies itself.
+//  3. Every mutation — whether from the agent (harness_mutate) or a direct-apply
+//     proposer — is recorded as a session entry, so /tree gives rollback for
+//     free. Which proposer ran is captured in the audit entry.
 //
-// Why a steering message instead of a nested LLM call: it reuses the existing
-// agent loop, is model-agnostic, and keeps every delta visible and reviewable
-// in the transcript. No hidden model calls.
+// Why a steering message as the DEFAULT instead of a nested LLM call: it reuses
+// the existing agent loop, is model-agnostic, and keeps every delta visible and
+// reviewable in the transcript. Alternate proposers can opt out via the
+// registry; the dedicated-model variant is intentionally not shipped (hidden
+// model spend is a tradeoff the roadmap keeps as a separate decision).
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { exportDurable, REFINE_ENTRY } from "./store.js";
+import { applyDeltas, exportDurable, getState, REFINE_ENTRY } from "./store.js";
+import { getProposer } from "./proposer.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
@@ -32,10 +38,10 @@ type AnyEntry = {
 export function registerRefine(pi: ExtensionAPI): void {
   pi.registerCommand("refine", {
     description:
-      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit]",
+      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe]",
     handler: async (args, ctx) => {
-      const { lookback, commit } = parseArgs(args);
-      await runRefine(pi, ctx, { lookback, commit });
+      const { lookback, commit, proposer } = parseArgs(args);
+      await runRefine(pi, ctx, { lookback, commit, ...(proposer ? { proposer } : {}) });
     },
   });
 }
@@ -43,6 +49,8 @@ export function registerRefine(pi: ExtensionAPI): void {
 export interface RefineOptions {
   lookback?: number;
   commit?: boolean;
+  /** Proposer name (see proposer.ts registry). Defaults to "steering". */
+  proposer?: string;
 }
 
 export interface RefineResult {
@@ -50,13 +58,18 @@ export interface RefineResult {
   lookback: number;
   commit: boolean;
   source: "manual" | "auto";
+  /** Which proposer ran. */
+  proposer: string;
+  /** Deltas the proposer applied directly (0 for the steering path). */
+  applied: number;
 }
 
-/** Core refine routine shared by /refine (manual) and turn_end auto-refine.
- *  Gathers trajectory evidence, records an audit entry, optionally flushes the
- *  durable state, then sends the steering user message that drives the agent to
- *  propose evidence-backed CRUD deltas. `source` tags the audit entry so
- *  autonomous runs are distinguishable in the transcript. */
+/**
+ * Core refine routine shared by /refine (manual) and turn_end auto-refine.
+ * Resolves a proposer, gathers evidence, lets the proposer decide what to do,
+ * then either applies returned deltas directly or sends a steering message.
+ * `source` tags the audit entry so autonomous runs are distinguishable.
+ */
 export async function runRefine(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -65,12 +78,38 @@ export async function runRefine(
 ): Promise<RefineResult> {
   const lookback = options.lookback ?? DEFAULT_LOOKBACK_TURNS;
   const commit = options.commit ?? false;
-  ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)…`);
+  const proposer = getProposer(options.proposer);
+  ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
+
   const evidence = gatherEvidence(ctx, lookback);
-  const prompt = buildSteeringPrompt(evidence, lookback);
+  const result = await proposer.propose({ evidence, state: getState(), lookback });
+  const proposedDeltas = result.deltas ?? [];
+
+  let applied = 0;
+  if (proposedDeltas.length > 0) {
+    // Direct-apply path (rule-based / model proposers): persist each batch the
+    // same way harness_mutate does, so /tree rollback covers these too.
+    const appliedDeltas = applyDeltas(
+      proposedDeltas.map((d) => d.delta),
+      (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }),
+    );
+    applied = appliedDeltas.length;
+    ctx.ui.notify(`Proposer "${proposer.name}" applied ${applied} delta(s) directly.`, "info");
+  }
+
   // Audit trail (branchable via /tree). `source` distinguishes manual /refine
-  // from opt-in auto-refine so autonomous runs are visible in the transcript.
-  pi.appendEntry(REFINE_ENTRY, { lookback, commit, startedAt: Date.now(), source });
+  // from opt-in auto-refine; `proposer` records WHICH strategy ran; the
+  // rationales make rule-based decisions visible in the transcript.
+  pi.appendEntry(REFINE_ENTRY, {
+    lookback,
+    commit,
+    startedAt: Date.now(),
+    source,
+    proposer: proposer.name,
+    applied,
+    rationales: proposedDeltas.map((d) => d.rationale),
+  });
+
   if (commit) {
     // Flush current state to the durable file first so the agent refines
     // against the same view pi-reflect / pi-mem would see.
@@ -81,20 +120,38 @@ export async function runRefine(
       ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
     }
   }
-  pi.sendUserMessage(prompt);
+
+  if (result.steeringMessage) {
+    pi.sendUserMessage(result.steeringMessage);
+  }
   ctx.ui.setStatus("harness", undefined);
-  return { evidenceBytes: evidence.length, lookback, commit, source };
+  return {
+    evidenceBytes: evidence.length,
+    lookback,
+    commit,
+    source,
+    proposer: proposer.name,
+    applied,
+  };
 }
 
-function parseArgs(args: string): { lookback: number; commit: boolean } {
+function parseArgs(args: string): {
+  lookback: number;
+  commit: boolean;
+  proposer: string | undefined;
+} {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let lookback = DEFAULT_LOOKBACK_TURNS;
   let commit = false;
-  for (const p of parts) {
+  let proposer: string | undefined;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i]!;
     if (p === "--commit") commit = true;
+    else if (p === "--proposer" && i + 1 < parts.length) proposer = parts[++i];
+    else if (p.startsWith("--proposer=")) proposer = p.slice("--proposer=".length);
     else if (/^\d+$/.test(p)) lookback = Math.max(1, Math.min(200, Number(p)));
   }
-  return { lookback, commit };
+  return { lookback, commit, proposer };
 }
 
 function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
@@ -120,22 +177,4 @@ function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
     bytes += line.length;
   }
   return lines.join("\n") || "(no recent trajectory evidence found)";
-}
-
-function buildSteeringPrompt(evidence: string, lookback: number): string {
-  return [
-    `/refine (online self-improvement, last ${lookback} turns as evidence)`,
-    "",
-    "Review the trajectory evidence below. Identify DURABLE, REUSABLE corrections — things that will help in future turns, not one-off fixes. Then update the Continual Harness state.",
-    "",
-    "Steps:",
-    "1. Call harness_list to see the current state.",
-    "2. Call harness_mutate with small, surgical CRUD deltas. Every create MUST include concrete evidence from the trajectory. Prefer updating existing items over creating duplicates; delete items that are wrong, stale, or contradicted.",
-    "3. Keep prompt notes terse and behavioral. Memory facts should be specific. Skill/sub-agent entries should describe reusable patterns, not one task.",
-    "",
-    "Constraints: never rewrite the whole store; ground every change in evidence; if nothing durable is worth recording, say so and do nothing.",
-    "",
-    "## Trajectory evidence",
-    evidence,
-  ].join("\n");
 }

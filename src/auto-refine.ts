@@ -53,7 +53,12 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
     const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
     ctx.ui.notify(`Auto-refine: running /refine (every ${every} turns, opt-in).`, "info");
     try {
-      await runRefine(pi, ctx, { commit: config.autoRefine?.commit ?? false }, "auto");
+      await runRefine(
+        pi,
+        ctx,
+        { commit: config.autoRefine?.commit ?? false, ...(config.proposer ? { proposer: config.proposer } : {}) },
+        "auto",
+      );
     } catch (err) {
       ctx.ui.notify(`Auto-refine failed: ${(err as Error).message}`, "error");
     }

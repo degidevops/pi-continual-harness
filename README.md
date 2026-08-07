@@ -51,6 +51,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 /refine              # review last 25 turns, propose deltas
 /refine 50           # review last 50 turns
 /refine 25 --commit  # also export durable state to ~/.pi/agent/harness-state.md
+/refine --proposer dedupe  # run the rule-based dedupe proposer instead of steering
 ```
 
 Durable I/O (round-trip with pi-reflect):
@@ -90,6 +91,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 ```json
 {
   "durableScope": "global",
+  "proposer": "steering",
   "remindRefine": { "enabled": false, "everyTurns": 50 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false }
 }
@@ -99,6 +101,9 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   `~/.pi/agent/harness-state.md`; `"project"` writes to
   `~/.pi/agent/harness-state/<slug>.md` (slug derived from `cwd`) so each
   project keeps separate state for pi-reflect.
+- **`proposer`** — which delta proposer `/refine` and auto-refine use. Defaults
+  to `steering` (the agent reasons via a steering message). `dedupe` applies a
+  rule-based dedupe directly. See [Proposers](#proposers).
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
@@ -112,15 +117,58 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 ## How it works
 
 1. `/refine` gathers recent trajectory evidence from the current session branch.
-2. It sends a steering user message asking the agent to propose evidence-backed
-   CRUD deltas via `harness_mutate`.
-3. The agent calls the tools; each accepted delta updates the in-memory state,
-   which is snapshotted to the session via `appendEntry("harness-state", ...)`.
+2. A **proposer** decides what to do. The default (`steering`) sends a steering
+   user message asking the agent to propose evidence-backed CRUD deltas via
+   `harness_mutate`; rule-based proposers (e.g. `dedupe`) return deltas the
+   harness applies directly. See [Proposers](#proposers).
+3. The agent calls the tools (steering path); each accepted delta updates the
+   in-memory state, which is snapshotted to the session via
+   `appendEntry("harness-state", ...)`. Direct-apply proposers snapshot the
+   same way.
 4. Because pi's session tree branches at any entry, `/tree` navigation gives
    rollback to any pre-refinement point for free — no bespoke snapshot system.
 
 This reuses the existing agent loop (no nested/hidden model calls), is
 model-agnostic, and keeps every delta visible and reviewable in the transcript.
+
+## Proposers
+
+`/refine` is split into two stages: **propose** (given evidence + state, decide
+what deltas to pursue) and **apply** (send a steering message, or apply returned
+deltas directly). The propose stage is pluggable via a registry
+(`src/proposer.ts`).
+
+| Name | What it does |
+|---|---|
+| `steering` (default) | Delegates reasoning to the agent via a steering message — reuses the agent loop, model-agnostic, fully visible. |
+| `dedupe` | Rule-based: drops near-duplicate active items (token-overlap ≥ 0.6), keeping the higher-importance one. No model call. |
+
+Select a proposer per run with `/refine --proposer <name>`, or set the default
+for auto-refine via `proposer` in the [config](#configuration). Both paths are
+audited: the `harness-refinement` entry records which proposer ran and how many
+deltas it applied directly.
+
+A dedicated-model proposer (a hidden LLM call) is the obvious next alternate
+the interface supports, but is intentionally not shipped — non-visible model
+spend is a tradeoff kept as a separate decision (see `docs/ROADMAP.md`).
+
+Register your own proposer from another extension (the registry is re-exported
+from the package entry):
+
+```ts
+import { registerProposer } from "pi-continual-harness";
+
+registerProposer({
+  name: "my-proposer",
+  async propose({ evidence, state }) {
+    /* inspect evidence + state, return deltas (and/or a steering message) */
+    return { deltas: [/* { delta, rationale } */] };
+  },
+});
+```
+
+Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
+`"proposer": "my-proposer"` in the config.
 
 ## Scope and non-goals
 
@@ -132,7 +180,7 @@ model-agnostic, and keeps every delta visible and reviewable in the transcript.
 
 ## Status
 
-0.2.x. Implemented:
+0.3.x. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
@@ -142,10 +190,13 @@ model-agnostic, and keeps every delta visible and reviewable in the transcript.
 - Optional config (`~/.pi/agent/harness.json`): project-local durable scope, an
   opt-in `turn_end` reminder, and opt-in `turn_end` auto-refine (the one
   autonomous-self-mutation path; off by default).
+- **Pluggable delta proposers** with a registry: `steering` (default) and
+  `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
 
 Open extension points (see `docs/ROADMAP.md`):
 
-- A pluggable delta proposer (currently the agent itself, via steering).
+- A dedicated-model proposer (interface ready; the hidden-model-spend tradeoff
+  is a separate decision).
 - pi-mem ingestion of the durable export.
 - Outcome-driven importance (currently model-set + manual nudges).
 

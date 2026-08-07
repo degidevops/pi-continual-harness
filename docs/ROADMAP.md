@@ -44,13 +44,20 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   **Effort:** ~110 lines. **Risk:** medium (autonomy) — mitigated by opt-in +
   cadence + audit + visibility + rollback.
 
-## Phase 4 — proposer quality (the big lever)
+## Phase 4 — DONE (main; unreleased)
 
-- **D. Pluggable proposer** — `DeltaProposer` interface (`propose(evidence, state)`).
-  Default = current steering (visible). Opt-in alternates: a dedicated-model
-  proposer (hidden call) or a rule-based proposer ("same correction twice → note").
-
-**Effort:** ~80 lines refactor. **Risk:** medium (tradeoff: a hidden model call).
+- **D. Pluggable proposer** — `DeltaProposer` interface + registry
+  (`src/proposer.ts`). `runRefine()` is now proposer-driven: it resolves a
+  proposer, calls `propose({ evidence, state, lookback })`, then either applies
+  returned deltas directly (persisted via `harness-state` entries, so `/tree`
+  rollback covers them) or sends a steering message. Two proposers shipped:
+  `steering` (default, behavior-preserving) and `dedupe` (rule-based: drops
+  near-duplicate active items by token Jaccard, keeping higher-importance).
+  Selectable via `/refine --proposer <name>` or `proposer` in config; the
+  registry is re-exported from the package entry (`registerProposer`).
+  **Effort:** ~230 lines (proposer.ts + runRefine refactor + tests). **Risk:**
+  medium — mitigated by keeping the default behavior-preserving and the
+  hidden-model-spend variant out of scope (documented as a future decision).
 
 ## Phase 5 — composition + outcome loop
 

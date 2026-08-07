@@ -29,12 +29,15 @@ export interface HarnessConfig {
     everyTurns?: number;
     commit?: boolean;
   };
+  /** Delta proposer name (see proposer.ts registry). Defaults to "steering". */
+  proposer?: string;
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
+  proposer: "steering",
 };
 
 export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
@@ -54,6 +57,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       everyTurns: over.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS,
       commit: over.autoRefine?.commit ?? false,
     },
+    proposer: over.proposer ?? "steering",
   };
 }
 

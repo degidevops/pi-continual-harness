@@ -36,3 +36,14 @@ export default function continualHarness(pi: ExtensionAPI): void {
 }
 
 export { STATE_ENTRY };
+
+// Public extension API: other extensions can register their own delta proposer
+// (see src/proposer.ts) and it becomes selectable via /refine --proposer <name>
+// or the `proposer` config key.
+export {
+  listProposers,
+  registerProposer,
+  type DeltaProposer,
+  type ProposeInput,
+  type ProposeResult,
+} from "./proposer.js";

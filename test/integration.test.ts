@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import continualHarness from "../src/index.js";
-import { getState, reconstruct, STATE_ENTRY } from "../src/store.js";
+import { applyDeltas, getState, reconstruct, STATE_ENTRY } from "../src/store.js";
+import type { Delta } from "../src/types.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import { resetAutoRefine } from "../src/auto-refine.js";
 import { runRefine } from "../src/refine.js";
@@ -193,6 +194,9 @@ describe("/refine command", () => {
 
     // audit entry recorded
     expect(entries.some((e) => e.customType === "harness-refinement")).toBe(true);
+    const audit = entries.find((e) => e.customType === "harness-refinement");
+    expect((audit!.data as { proposer: string }).proposer).toBe("steering");
+    expect((audit!.data as { applied: number }).applied).toBe(0);
   });
 
   it("parses lookback N and --commit from args", async () => {
@@ -379,5 +383,50 @@ describe("runRefine + auto-refine", () => {
       resetConfigCache();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("proposer selection (Phase 4)", () => {
+  beforeEach(reset);
+
+  it("runRefine with proposer 'dedupe' applies deltas directly (no steering message)", async () => {
+    const { pi, ctx, sentMessages, entries } = makeFakePi([
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+    ]);
+    continualHarness(pi);
+    // seed two near-duplicate active items
+    const seeds: Delta[] = [
+      { op: "create", kind: "prompt", content: "always use the foo pattern", evidence: "t1", importance: 0.9 },
+      { op: "create", kind: "prompt", content: "use the foo pattern always", evidence: "t2", importance: 0.4 },
+    ];
+    applyDeltas(seeds, () => {});
+    expect(getState().items).toHaveLength(2);
+
+    await runRefine(pi, ctx() as unknown as ExtensionCommandContext, { proposer: "dedupe" });
+
+    // direct-apply path: no steering message, lower-importance dupe removed
+    expect(sentMessages).toHaveLength(0);
+    expect(getState().items).toHaveLength(1);
+    expect(getState().items[0]!.importance).toBe(0.9);
+    // audit records which proposer ran + how many it applied
+    const audits = entries.filter((e) => e.customType === "harness-refinement");
+    expect(audits).toHaveLength(1);
+    expect((audits[0]!.data as { proposer: string }).proposer).toBe("dedupe");
+    expect((audits[0]!.data as { applied: number }).applied).toBe(1);
+  });
+
+  it("/refine --proposer dedupe routes through the command path", async () => {
+    const { pi, commands, ctx, sentMessages } = makeFakePi([
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+    ]);
+    continualHarness(pi);
+    const seeds: Delta[] = [
+      { op: "create", kind: "prompt", content: "always use the foo pattern", evidence: "t1", importance: 0.9 },
+      { op: "create", kind: "prompt", content: "use the foo pattern always", evidence: "t2", importance: 0.4 },
+    ];
+    applyDeltas(seeds, () => {});
+    await commands.get("refine")!.handler("--proposer dedupe", ctx());
+    expect(sentMessages).toHaveLength(0);
+    expect(getState().items).toHaveLength(1);
   });
 });
