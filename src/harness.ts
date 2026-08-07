@@ -17,11 +17,11 @@ import { stat } from "node:fs/promises";
 import {
   bumpImportance,
   decayAndPrune,
-  DEFAULT_DURABLE_PATH,
   exportDurable,
   getState,
   reconstructFromDurable,
 } from "./store.js";
+import { loadConfig, resolveDurablePath } from "./config.js";
 import type { ComponentKind } from "./types.js";
 
 export function registerHarness(pi: ExtensionAPI): void {
@@ -59,8 +59,11 @@ export function registerHarness(pi: ExtensionAPI): void {
   });
 }
 
-function resolvePath(rest: string[]): string {
-  return rest.find((a) => !a.startsWith("-")) ?? DEFAULT_DURABLE_PATH;
+async function resolvePath(rest: string[], ctx: ExtensionCommandContext): Promise<string> {
+  const explicit = rest.find((a) => !a.startsWith("-"));
+  if (explicit) return explicit;
+  const config = await loadConfig();
+  return resolveDurablePath(config, ctx.cwd);
 }
 
 async function handleImport(
@@ -69,7 +72,7 @@ async function handleImport(
   rest: string[],
 ): Promise<void> {
   const prune = rest.includes("--prune");
-  const path = resolvePath(rest);
+  const path = await resolvePath(rest, ctx);
   ctx.ui.setStatus("harness", `Importing durable state${prune ? " (prune)" : ""}…`);
   try {
     const res = await reconstructFromDurable(path, { prune }, (snapshot, ver) => {
@@ -92,7 +95,7 @@ async function handleImport(
 }
 
 async function handleExport(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
-  const path = resolvePath(rest);
+  const path = await resolvePath(rest, ctx);
   ctx.ui.setStatus("harness", "Exporting durable state…");
   try {
     const written = await exportDurable(path);
@@ -158,7 +161,7 @@ async function handleBump(
 }
 
 async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
-  const path = resolvePath(rest);
+  const path = await resolvePath(rest, ctx);
   const items = getState().items;
   const active = items.filter((i) => i.active);
   const counts: Record<ComponentKind, number> = { prompt: 0, memory: 0, skill: 0, subagent: 0 };

@@ -78,14 +78,16 @@ function reset(): void {
 describe("registration", () => {
   beforeEach(reset);
 
-  it("registers session_start, before_agent_start, the two tools, and /refine", () => {
+  it("registers session_start, before_agent_start, turn_end, the two tools, and /refine", () => {
     const { pi, handlers, tools, commands } = makeFakePi([]);
     continualHarness(pi);
     expect(handlers.has("session_start")).toBe(true);
     expect(handlers.has("before_agent_start")).toBe(true);
+    expect(handlers.has("turn_end")).toBe(true);
     expect(tools.has("harness_list")).toBe(true);
     expect(tools.has("harness_mutate")).toBe(true);
     expect(commands.has("refine")).toBe(true);
+    expect(commands.has("harness")).toBe(true);
   });
 });
 

@@ -83,6 +83,25 @@ The model-facing tools:
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
 
+## Configuration
+
+Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
+
+```json
+{
+  "durableScope": "global",
+  "remindRefine": { "enabled": false, "everyTurns": 50 }
+}
+```
+
+- **`durableScope`** — `"global"` (default) writes the durable markdown to
+  `~/.pi/agent/harness-state.md`; `"project"` writes to
+  `~/.pi/agent/harness-state/<slug>.md` (slug derived from `cwd`) so each
+  project keeps separate state for pi-reflect.
+- **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
+  "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
+  informational only — it never mutates state.
+
 ## How it works
 
 1. `/refine` gathers recent trajectory evidence from the current session branch.
@@ -106,15 +125,23 @@ model-agnostic, and keeps every delta visible and reviewable in the transcript.
 
 ## Status
 
-0.1.x. The durable round-trip with pi-reflect is implemented
-(`/harness import|export|status`). Open extension points:
+0.2.x. Implemented:
+
+- Unified harness-state store with branch-local snapshots (`/tree` rollback).
+- Online `/refine` + `harness_mutate` / `harness_list` tools.
+- Two-way durable round-trip with pi-reflect (`/harness import|export|status`).
+- Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
+  <id>`.
+- Optional config (`~/.pi/agent/harness.json`): project-local durable scope and
+  an opt-in `turn_end` reminder.
+
+Open extension points (see `docs/ROADMAP.md`):
 
 - A pluggable delta proposer (currently the agent itself, via steering).
-- Project-local vs global durable paths.
-- Optional `turn_end` auto-trigger behind a setting (intentionally off by
-  default — autonomous self-mutation is a sharp edge).
-- Importance decay/prune policy — `decayAndPrune()` exists but is not yet wired.
-- pi-mem ingestion of the durable export (manual/future).
+- Opt-in `turn_end` auto-refine (reminder is wired; autonomous self-mutation is
+  a sharp edge, so the trigger is off by default).
+- pi-mem ingestion of the durable export.
+- Outcome-driven importance (currently model-set + manual nudges).
 
 ## License
 

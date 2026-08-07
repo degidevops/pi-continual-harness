@@ -16,24 +16,23 @@ Two-way durable seam: `parseDurable()` + `reconstructFromDurable()` +
 `/harness import|export|status`. The pi-reflect round-trip closes:
 `/refine --commit → harness-state.md → /reflect edits → /harness import → store`.
 
-## Phase 1 — low-risk `/harness` completions (no new infra)
+## Phase 1 — DONE (main; unreleased)
 
-- **A. Prune** — `/harness prune [--decay <days>]`; wire `decayAndPrune()` to
-  first age importance (−step for items older than N days) then drop below floor.
+- **A. Prune** — `/harness prune [--decay <days>]`; `decayAndPrune()` first ages
+  importance (−step for items older than N days) then drops below floor.
 - **B (phase 1). Human signal** — `/harness keep|drop <id>` via `bumpImportance()`.
 
-**Acceptance:** store unit tests + `/harness` command smoke tests.
-**Effort:** ~70 lines. **Risk:** low.
+Shipped: store unit tests + `/harness` command smoke tests. **Effort:** ~70 lines. **Risk:** low.
 
-## Phase 2 — config infra (unblocks F + C)
+## Phase 2 — DONE (main; unreleased)
 
-- Introduce `~/.pi/agent/harness.json` + a `loadConfig(ctx)` reader (`src/config.ts`).
+- Config at `~/.pi/agent/harness.json` + a `loadConfig()` reader (`src/config.ts`).
 - **F. Project-local durable path** — `durableScope: "global"|"project"`;
-  `resolveDurablePath()` derives a stable slug from `ctx.cwd`/git root.
-- **C-reminder.** Opt-in `turn_end` reminder every N turns (notify only, no action).
+  `resolveDurablePath()` derives a stable slug from `cwd`.
+- **C-reminder.** Opt-in `turn_end` reminder (`src/remind.ts`) every N turns —
+  notify only, never mutates.
 
-**Acceptance:** config loader tests; project-slug derivation test.
-**Effort:** ~120 lines. **Risk:** low.
+Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Effort:** ~190 lines. **Risk:** low.
 
 ## Phase 3 — autonomy (opt-in)
 

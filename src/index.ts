@@ -11,6 +11,7 @@ import { registerHarness } from "./harness.js";
 import { registerInjection } from "./inject.js";
 import { registerRefine } from "./refine.js";
 import { registerTools } from "./tools.js";
+import { registerReminder } from "./remind.js";
 import { getState, reconstruct, STATE_ENTRY } from "./store.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
@@ -29,6 +30,7 @@ export default function continualHarness(pi: ExtensionAPI): void {
   registerTools(pi);
   registerRefine(pi);
   registerHarness(pi);
+  registerReminder(pi);
 }
 
 export { STATE_ENTRY };
