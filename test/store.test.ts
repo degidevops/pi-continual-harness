@@ -3,7 +3,7 @@
 // callback, which decouples it from the ExtensionAPI.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,9 @@ import {
   getState,
   IMPORTANCE_FLOOR,
   listItems,
+  parseDurable,
   reconstruct,
+  reconstructFromDurable,
 } from "../src/store.js";
 import type { Delta } from "../src/types.js";
 
@@ -222,5 +224,134 @@ describe("exportDurable", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("parseDurable + reconstructFromDurable", () => {
+  beforeEach(reset);
+
+  it("parseDurable inverts exportDurable (round-trip of the canonical format)", async () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "prompt", content: "be terse", evidence: "user feedback", importance: 0.8 },
+        { op: "create", kind: "memory", content: "uses vitest", evidence: "saw config", importance: 0.7 },
+      ],
+      vi.fn(),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-rt-"));
+    const file = join(dir, "harness-state.md");
+    try {
+      await exportDurable(file);
+      const parsed = parseDurable(readFileSync(file, "utf8"));
+      expect(parsed).toHaveLength(2);
+      const byContent = new Map(parsed.map((p) => [p.content, p]));
+      expect(byContent.get("be terse")?.kind).toBe("prompt");
+      expect(byContent.get("be terse")?.importance).toBeCloseTo(0.8);
+      expect(byContent.get("be terse")?.evidence).toBe("user feedback");
+      expect(byContent.get("uses vitest")?.kind).toBe("memory");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reconstructFromDurable updates by id (durable wins) and creates new items", async () => {
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "prompt", content: "old", evidence: "old ev", importance: 0.5 }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-imp-"));
+    const file = join(dir, "harness-state.md");
+    // Simulate pi-reflect: rewrite the existing item's content/importance and
+    // add a brand-new bullet (no **[id]**).
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Supplemental prompt notes",
+        "",
+        `- **[${id}]** (importance 0.90) be terse and cite evidence`,
+        `  - evidence: refined offline by pi-reflect`,
+        `- new note pi-reflect added`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const persist = vi.fn();
+    let res;
+    try {
+      res = await reconstructFromDurable(file, {}, persist);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(res.missingFile).toBe(false);
+    expect(res.imported).toBe(2);
+    expect(res.updated).toBe(1);
+    expect(res.created).toBe(1);
+    expect(res.pruned).toBe(0);
+    const items = getState().items;
+    const updated = items.find((i) => i.id === id)!;
+    expect(updated.content).toBe("be terse and cite evidence");
+    expect(updated.importance).toBeCloseTo(0.9);
+    expect(updated.evidence).toBe("refined offline by pi-reflect");
+    expect(items).toHaveLength(2);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("{ prune: true } drops active items absent from the file, keeps inactive ones", async () => {
+    const [keep] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "keep me", evidence: "e", importance: 0.6 }],
+      vi.fn(),
+    );
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "drop me", evidence: "e", importance: 0.6 }],
+      vi.fn(),
+    );
+    const [inactive] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "inactive", evidence: "e", importance: 0.6 }],
+      vi.fn(),
+    );
+    applyDeltas(
+      [{ op: "update", id: inactive!.op === "create" ? inactive!.item.id : "", active: false }],
+      vi.fn(),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-prune-"));
+    const file = join(dir, "harness-state.md");
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        `- **[${keep!.op === "create" ? keep!.item.id : ""}]** (importance 0.60) keep me`,
+        `  - evidence: e`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      const res = await reconstructFromDurable(file, { prune: true }, vi.fn());
+      expect(res.pruned).toBe(1);
+      const contents = getState().items.map((i) => i.content);
+      expect(contents).toContain("keep me");
+      expect(contents).not.toContain("drop me");
+      expect(contents).toContain("inactive"); // inactive items are never pruned
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns missingFile and is a no-op when the path does not exist", async () => {
+    const persist = vi.fn();
+    const res = await reconstructFromDurable(
+      join(tmpdir(), `does-not-exist-${Date.now()}.md`),
+      {},
+      persist,
+    );
+    expect(res.missingFile).toBe(true);
+    expect(res.imported).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
   });
 });

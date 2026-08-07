@@ -10,7 +10,7 @@
 //     to a markdown file pi-reflect can read and refine offline, and pi-mem can
 //     ingest. Best-effort; the package works without it.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState } from "./types.js";
@@ -18,7 +18,7 @@ import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState } fr
 const STATE_ENTRY = "harness-state";
 const REFINE_ENTRY = "harness-refinement";
 
-const DEFAULT_DURABLE_PATH = join(homedir(), ".pi", "agent", "harness-state.md");
+export const DEFAULT_DURABLE_PATH = join(homedir(), ".pi", "agent", "harness-state.md");
 
 const IMPORTANCE_FLOOR = 0.3;
 
@@ -166,4 +166,191 @@ function titleFor(kind: ComponentKind): string {
     case "subagent":
       return "Sub-agent specs";
   }
+}
+
+// ---- Durable import (round-trip seam with pi-reflect) ---------------------
+//
+// exportDurable() is write-only by design. reconstructFromDurable() closes the
+// loop: it parses the markdown back into items and merges them into the live
+// store, so offline edits pi-reflect makes to harness-state.md flow back in.
+//
+// Merge semantics (predictable, loss-free by default):
+//   - parsed item whose id matches an existing item → UPDATE in place
+//     (durable wins on content/evidence/importance; reactivated; createdAt kept).
+//   - parsed item with a new/foreign id → CREATE.
+//   - items in the store but absent from the file → KEPT by default.
+//     Pass { prune: true } to also drop active items whose id is not in the
+//     file (inactive items are always preserved — the durable export never
+//     contains them, so they cannot have been "deleted" by pi-reflect).
+
+export interface DurableImportResult {
+  /** Items successfully parsed from the file. */
+  imported: number;
+  created: number;
+  updated: number;
+  /** Only non-zero when { prune: true }. */
+  pruned: number;
+  /** True if the file did not exist (no-op). */
+  missingFile: boolean;
+}
+
+interface ParsedItem {
+  id?: string;
+  kind: ComponentKind;
+  importance: number;
+  content: string;
+  evidence: string;
+}
+
+// Section title → kind. Exact export titles first, then tolerant keyword
+// fallbacks so pi-reflect's edits to headings still parse.
+const TITLE_TO_KIND: Array<[RegExp, ComponentKind]> = [
+  [/supplemental prompt notes/i, "prompt"],
+  [/memory facts/i, "memory"],
+  [/skill descriptions/i, "skill"],
+  [/sub-?agent specs/i, "subagent"],
+  [/\bprompt\b/i, "prompt"],
+  [/\bmemory\b/i, "memory"],
+  [/\bskills?\b/i, "skill"],
+  [/\bsub-?agents?\b/i, "subagent"],
+];
+
+function titleToKind(title: string): ComponentKind | undefined {
+  for (const [re, kind] of TITLE_TO_KIND) if (re.test(title)) return kind;
+  return undefined;
+}
+
+const RE_H2 = /^##\s+(.*)$/;
+const RE_ID_BULLET = /^-\s+\*\*\[([^\]]+)\]\*\*\s*\(importance\s+([\d.]+)\)\s*(.*)$/;
+const RE_PLAIN_BULLET = /^-\s+(.+)$/;
+const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
+
+/** Parse a durable markdown export into items. Tolerant of pi-reflect's edits. */
+export function parseDurable(text: string): ParsedItem[] {
+  const out: ParsedItem[] = [];
+  let kind: ComponentKind | undefined;
+  let pending: ParsedItem | null = null;
+  const flush = (): void => {
+    if (pending && pending.content) out.push(pending);
+    pending = null;
+  };
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/\s+$/, "");
+    const h2 = line.match(RE_H2);
+    if (h2) {
+      flush();
+      kind = titleToKind(h2[1]!.trim());
+      continue;
+    }
+    if (/^#/.test(line)) {
+      flush(); // any other header (h1, h3, …)
+      continue;
+    }
+    if (!kind) continue; // ignore bullets outside a known section
+
+    const ev = line.match(RE_EVIDENCE);
+    if (ev) {
+      if (pending) pending.evidence = ev[1]!.trim();
+      continue;
+    }
+
+    const idm = line.match(RE_ID_BULLET);
+    if (idm) {
+      flush();
+      const imp = Number(idm[2]!);
+      pending = {
+        id: idm[1]!.trim(),
+        kind,
+        importance: Number.isNaN(imp) ? 0.5 : imp,
+        content: idm[3]!.trim(),
+        evidence: "",
+      };
+      continue;
+    }
+
+    const pm = line.match(RE_PLAIN_BULLET);
+    if (pm) {
+      flush();
+      const body = pm[1]!.trim();
+      const idInBody = body.match(/^\*\*\[([^\]]+)\]\*\*/);
+      pending = {
+        kind,
+        importance: 0.5,
+        content: body.replace(/^\*\*\[([^\]]+)\]\*\*\s*/, "").trim(),
+        evidence: "",
+      };
+      if (idInBody) pending.id = idInBody[1]!.trim();
+      continue;
+    }
+  }
+  flush();
+  return out.filter((p) => p.content && !/^\(?no active items\)?$/i.test(p.content));
+}
+
+/**
+ * Parse the durable file and merge it into the live store, then persist a
+ * snapshot. See the file-level comment above for merge semantics.
+ */
+export async function reconstructFromDurable(
+  path: string,
+  options: { prune?: boolean },
+  persist: (snapshot: HarnessState, version: number) => void,
+): Promise<DurableImportResult> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true };
+  }
+
+  const parsed = parseDurable(text);
+  const fileIds = new Set(parsed.map((p) => p.id).filter((id): id is string => Boolean(id)));
+  const existingById = new Map(state.items.map((i) => [i.id, i] as const));
+  const preActiveIds = new Set(state.items.filter((i) => i.active).map((i) => i.id));
+
+  let created = 0;
+  let updated = 0;
+  const now = Date.now();
+  for (const p of parsed) {
+    const existing = p.id ? existingById.get(p.id) : undefined;
+    if (existing) {
+      // Durable wins; reactivate; keep createdAt.
+      existing.content = p.content;
+      existing.evidence = p.evidence;
+      existing.importance = clamp(p.importance);
+      existing.active = true;
+      existing.updatedAt = now;
+      updated += 1;
+    } else {
+      const id = p.id && /^h_/.test(p.id) ? p.id : genId();
+      state.items.push({
+        id,
+        kind: p.kind,
+        content: p.content,
+        evidence: p.evidence,
+        importance: clamp(p.importance),
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      created += 1;
+    }
+  }
+
+  let pruned = 0;
+  if (options.prune) {
+    const before = state.items.length;
+    state.items = state.items.filter((i) => {
+      if (!i.active) return true; // inactive items are never touched by durable I/O
+      if (!preActiveIds.has(i.id)) return true; // created during this import
+      if (fileIds.has(i.id)) return true; // present in the file
+      return false; // was active before, absent from the file → drop
+    });
+    pruned = before - state.items.length;
+  }
+
+  version += 1;
+  persist(state, version);
+  return { imported: parsed.length, created, updated, pruned, missingFile: false };
 }

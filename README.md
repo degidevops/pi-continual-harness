@@ -13,8 +13,11 @@ with:
   → behavioral-file refinement (the "deep" path).
 - **pi-mem / pi-memory** — durable memory storage.
 
-The durable markdown export (`.pi/harness-state.md`) is the composition seam:
-pi-reflect can read and refine it, pi-mem can ingest it.
+The durable markdown file (`.pi/harness-state.md`) is the composition seam,
+and it is **two-way**: `/refine --commit` and `/harness export` write it;
+`/harness import` parses it back and merges into the live store (offline edits
+win on conflict), so refinements pi-reflect makes flow back online. pi-mem
+ingestion is a future/manual step.
 
 ## Why
 
@@ -50,6 +53,24 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 /refine 25 --commit  # also export durable state to ~/.pi/agent/harness-state.md
 ```
 
+Durable I/O (round-trip with pi-reflect):
+
+```
+/harness status                  # counts + durable file presence/mtime
+/harness export [path]           # write active items to a markdown file
+/harness import [--prune] [path] # parse it back and merge (offline edits win)
+```
+
+`import` reconciles the file into the live store: items whose id matches an
+existing entry are updated (offline edits win on content/evidence/importance),
+new entries are created. By default nothing is deleted — `--prune` also drops
+active items whose id is no longer in the file (inactive items are always
+preserved). Point pi-reflect at the same file to refine it offline:
+
+```
+/reflect ~/.pi/agent/harness-state.md
+```
+
 The model-facing tools:
 
 - `harness_list [kind]` — read current state (optionally filtered by kind).
@@ -82,13 +103,15 @@ model-agnostic, and keeps every delta visible and reviewable in the transcript.
 
 ## Status
 
-Scaffold (0.1.0). Extension points to grow into:
+0.1.x. The durable round-trip with pi-reflect is implemented
+(`/harness import|export|status`). Open extension points:
 
 - A pluggable delta proposer (currently the agent itself, via steering).
 - Project-local vs global durable paths.
 - Optional `turn_end` auto-trigger behind a setting (intentionally off by
   default — autonomous self-mutation is a sharp edge).
-- Importance decay/prune policy.
+- Importance decay/prune policy — `decayAndPrune()` exists but is not yet wired.
+- pi-mem ingestion of the durable export (manual/future).
 
 ## License
 

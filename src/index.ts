@@ -7,6 +7,7 @@
 // See README for design rationale and the research it is grounded in.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerHarness } from "./harness.js";
 import { registerInjection } from "./inject.js";
 import { registerRefine } from "./refine.js";
 import { registerTools } from "./tools.js";
@@ -27,6 +28,7 @@ export default function continualHarness(pi: ExtensionAPI): void {
   registerInjection(pi);
   registerTools(pi);
   registerRefine(pi);
+  registerHarness(pi);
 }
 
 export { STATE_ENTRY };

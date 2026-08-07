@@ -12,6 +12,9 @@
 // harness_list / harness_mutate tools round-tripping through appendEntry.
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import continualHarness from "../src/index.js";
 import { getState, reconstruct, STATE_ENTRY } from "../src/store.js";
@@ -220,5 +223,47 @@ describe("harness tools round-trip", () => {
       content: Array<{ type: string; text: string }>;
     };
     expect(listed.content[0]!.text).toContain("fact A");
+  });
+});
+
+describe("/harness command", () => {
+  beforeEach(reset);
+
+  it("registers the harness command", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    expect(commands.has("harness")).toBe(true);
+  });
+
+  it("export then import round-trips active items through a durable file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-harness-"));
+    const file = join(dir, "harness-state.md");
+    try {
+      const { pi, tools, commands, ctx, notifications } = makeFakePi([]);
+      continualHarness(pi);
+
+      // seed an item
+      const mutate = tools.get("harness_mutate")!;
+      await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+        undefined,
+        { deltas: [{ op: "create", kind: "memory", content: "durable fact", evidence: "saw it" }] },
+        undefined,
+        undefined,
+        ctx(),
+      );
+
+      // export to the temp file
+      await commands.get("harness")!.handler(`export ${file}`, ctx());
+      expect(notifications.some((n) => /Exported 1 active/.test(n.msg))).toBe(true);
+
+      // wipe live state, then import it back
+      reconstruct([]);
+      expect(getState().items).toHaveLength(0);
+      await commands.get("harness")!.handler(`import ${file}`, ctx());
+      expect(getState().items.map((i) => i.content)).toContain("durable fact");
+      expect(notifications.some((n) => /Imported 1 item/.test(n.msg))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
