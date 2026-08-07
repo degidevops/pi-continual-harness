@@ -14,14 +14,22 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { stat } from "node:fs/promises";
-import { DEFAULT_DURABLE_PATH, exportDurable, getState, reconstructFromDurable } from "./store.js";
+import {
+  bumpImportance,
+  decayAndPrune,
+  DEFAULT_DURABLE_PATH,
+  exportDurable,
+  getState,
+  reconstructFromDurable,
+} from "./store.js";
 import type { ComponentKind } from "./types.js";
 
 export function registerHarness(pi: ExtensionAPI): void {
   pi.registerCommand("harness", {
     description:
-      "Durable harness-state I/O (round-trip seam with pi-reflect). " +
-      "Subcommands: import [--prune] [path] · export [path] · status [path].",
+      "Durable harness-state I/O + importance hygiene. Subcommands: " +
+      "import [--prune] [path] · export [path] · status [path] · " +
+      "prune [--decay <days>] · keep <id> · drop <id>.",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "status").toLowerCase();
@@ -32,6 +40,15 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
         case "export":
           await handleExport(ctx, rest);
+          return;
+        case "prune":
+          await handlePrune(pi, ctx, rest);
+          return;
+        case "keep":
+          await handleBump(pi, ctx, rest, 0.1, "keep");
+          return;
+        case "drop":
+          await handleBump(pi, ctx, rest, -0.1, "drop");
           return;
         case "status":
         default:
@@ -85,6 +102,59 @@ async function handleExport(ctx: ExtensionCommandContext, rest: string[]): Promi
     ctx.ui.notify(`Harness export failed: ${(err as Error).message}`, "error");
   }
   ctx.ui.setStatus("harness", undefined);
+}
+
+async function handlePrune(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  let decayAfterDays: number | undefined;
+  const idx = rest.indexOf("--decay");
+  if (idx >= 0) {
+    const n = Number(rest[idx + 1]);
+    decayAfterDays = Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+  ctx.ui.setStatus("harness", "Pruning…");
+  try {
+    const options: { decayAfterDays?: number; decayStep?: number } = { decayStep: 0.1 };
+    if (decayAfterDays !== undefined) options.decayAfterDays = decayAfterDays;
+    const res = decayAndPrune(options, (snapshot, ver) => {
+      pi.appendEntry("harness-state", { state: snapshot, version: ver });
+    });
+    const bits = [`${res.pruned} pruned`];
+    if (decayAfterDays !== undefined) bits.push(`${res.decayed} decayed (>${decayAfterDays}d)`);
+    ctx.ui.notify(`Harness: ${bits.join(", ")}.`, "info");
+  } catch (err) {
+    ctx.ui.notify(`Harness prune failed: ${(err as Error).message}`, "error");
+  }
+  ctx.ui.setStatus("harness", undefined);
+}
+
+async function handleBump(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+  delta: number,
+  label: string,
+): Promise<void> {
+  const id = rest.find((a) => a && !a.startsWith("-"));
+  if (!id) {
+    ctx.ui.notify(
+      `/harness ${label} requires an item id (see /harness status or harness_list).`,
+      "warning",
+    );
+    return;
+  }
+  const item = bumpImportance(id, delta, (snapshot, ver) => {
+    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+  });
+  if (!item) {
+    ctx.ui.notify(`No harness item with id ${id}.`, "warning");
+    return;
+  }
+  const preview = item.content.length > 60 ? `${item.content.slice(0, 60)}…` : item.content;
+  ctx.ui.notify(`${label}: "${preview}" → importance ${item.importance.toFixed(2)}`, "info");
 }
 
 async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {

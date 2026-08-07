@@ -266,4 +266,39 @@ describe("/harness command", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("/harness prune removes items below the importance floor", async () => {
+    const { pi, tools, commands, ctx, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [{ op: "create", kind: "memory", content: "low", evidence: "e", importance: 0.1 }] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    expect(getState().items).toHaveLength(1);
+    await commands.get("harness")!.handler("prune", ctx());
+    expect(getState().items).toHaveLength(0);
+    expect(notifications.some((n) => /1 pruned/.test(n.msg))).toBe(true);
+  });
+
+  it("/harness keep|drop nudge importance by id", async () => {
+    const { pi, tools, commands, ctx } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [{ op: "create", kind: "memory", content: "x", evidence: "e", importance: 0.5 }] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const id = getState().items[0]!.id;
+    await commands.get("harness")!.handler(`keep ${id}`, ctx());
+    expect(getState().items[0]!.importance).toBeCloseTo(0.6);
+    await commands.get("harness")!.handler(`drop ${id}`, ctx());
+    expect(getState().items[0]!.importance).toBeCloseTo(0.5);
+  });
 });

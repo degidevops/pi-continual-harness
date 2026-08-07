@@ -59,6 +59,9 @@ Durable I/O (round-trip with pi-reflect):
 /harness status                  # counts + durable file presence/mtime
 /harness export [path]           # write active items to a markdown file
 /harness import [--prune] [path] # parse it back and merge (offline edits win)
+/harness prune [--decay <days>]  # drop items below the importance floor
+/harness keep <id>               # nudge importance up (+0.1)
+/harness drop <id>               # nudge importance down (−0.1)
 ```
 
 `import` reconciles the file into the live store: items whose id matches an

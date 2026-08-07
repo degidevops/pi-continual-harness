@@ -120,15 +120,49 @@ export function reconstruct(entries: Iterable<unknown>): void {
   version = 0;
 }
 
-/** Decrement importance of inactive/low-signal items; prune below the floor. */
-export function decayAndPrune(persist: (snapshot: HarnessState, version: number) => void): {
-  pruned: number;
-} {
+/**
+ * Age importance of stale items, then prune below the floor.
+ *  - decayAfterDays: if set, items whose updatedAt is older than this get
+ *    importance -= decayStep (default 0.1) before pruning. Time-since-update
+ *    is a weak proxy for staleness; pair with /harness keep|drop for signal.
+ *  - Items below IMPORTANCE_FLOOR after decay are removed.
+ */
+export function decayAndPrune(
+  options: { decayAfterDays?: number; decayStep?: number } = {},
+  persist: (snapshot: HarnessState, version: number) => void,
+): { pruned: number; decayed: number } {
+  let decayed = 0;
+  const step = options.decayStep ?? 0.1;
+  const ms = options.decayAfterDays !== undefined ? options.decayAfterDays * 86_400_000 : undefined;
+  const now = Date.now();
+  if (ms !== undefined) {
+    for (const i of state.items) {
+      if (now - i.updatedAt > ms) {
+        i.importance = clamp(i.importance - step);
+        decayed += 1;
+      }
+    }
+  }
   const before = state.items.length;
   state.items = state.items.filter((i) => i.importance >= IMPORTANCE_FLOOR);
   version += 1;
   persist(state, version);
-  return { pruned: before - state.items.length };
+  return { pruned: before - state.items.length, decayed };
+}
+
+/** Nudge an item's importance by delta (clamped to [0,1]) and touch updatedAt. */
+export function bumpImportance(
+  id: string,
+  delta: number,
+  persist: (snapshot: HarnessState, version: number) => void,
+): HarnessItem | undefined {
+  const item = state.items.find((i) => i.id === id);
+  if (!item) return undefined;
+  item.importance = clamp(item.importance + delta);
+  item.updatedAt = Date.now();
+  version += 1;
+  persist(state, version);
+  return item;
 }
 
 export { STATE_ENTRY, REFINE_ENTRY, IMPORTANCE_FLOOR };

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyDeltas,
+  bumpImportance,
   decayAndPrune,
   exportDurable,
   getState,
@@ -186,10 +187,48 @@ describe("decayAndPrune", () => {
       vi.fn(),
     );
     const persist = vi.fn();
-    const { pruned } = decayAndPrune(persist);
+    const { pruned, decayed } = decayAndPrune({}, persist);
     expect(pruned).toBe(1);
+    expect(decayed).toBe(0);
     expect(getState().items.map((i) => i.content)).toEqual(["keep"]);
     expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("ages old items (--decay) then prunes below floor", () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "stale", evidence: "e", importance: 0.35 },
+        { op: "create", kind: "memory", content: "fresh", evidence: "e", importance: 0.35 },
+      ],
+      vi.fn(),
+    );
+    // Force "stale" old; leave "fresh" recent.
+    const items = getState().items;
+    items.find((i) => i.content === "stale")!.updatedAt = Date.now() - 30 * 86_400_000;
+    const res = decayAndPrune({ decayAfterDays: 7, decayStep: 0.1 }, vi.fn());
+    // stale: 0.35 - 0.1 = 0.25 < floor → decayed + pruned; fresh stays 0.35
+    expect(res.decayed).toBe(1);
+    expect(res.pruned).toBe(1);
+    expect(getState().items.map((i) => i.content)).toEqual(["fresh"]);
+  });
+});
+
+describe("bumpImportance", () => {
+  beforeEach(reset);
+
+  it("nudges ±, clamps to [0,1], touches updatedAt, and persists", () => {
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "x", evidence: "e", importance: 0.5 }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    const persist = vi.fn();
+    const up = bumpImportance(id, 0.2, persist);
+    expect(up?.importance).toBeCloseTo(0.7);
+    const down = bumpImportance(id, -1, persist); // clamps to 0
+    expect(down?.importance).toBe(0);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(bumpImportance("nope", 0.1, persist)).toBeUndefined();
   });
 });
 
