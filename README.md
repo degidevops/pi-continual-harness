@@ -13,7 +13,7 @@ with:
   → behavioral-file refinement (the "deep" path).
 - **pi-mem / pi-memory** — durable memory storage.
 
-The durable markdown file (`.pi/harness-state.md`) is the composition seam,
+The durable markdown file (`~/.pi/agent/harness-state.md`) is the composition seam,
 and it is **two-way**: `/refine --commit` and `/harness export` write it;
 `/harness import` parses it back and merges into the live store (offline edits
 win on conflict), so refinements pi-reflect makes flow back online. `/harness push-mem`

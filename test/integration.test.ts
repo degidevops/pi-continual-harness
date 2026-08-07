@@ -21,6 +21,7 @@ import { applyDeltas, getState, reconstruct, STATE_ENTRY } from "../src/store.js
 import type { Delta } from "../src/types.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import { resetAutoRefine } from "../src/auto-refine.js";
+import { resetOutcome } from "../src/outcome.js";
 import { runRefine } from "../src/refine.js";
 import { registerProposer } from "../src/proposer.js";
 
@@ -379,6 +380,40 @@ describe("runRefine + auto-refine", () => {
         await handlers.get("turn_end")!({ type: "turn_end", turnIndex: i }, ctx());
       }
       expect(sentMessages).toHaveLength(0);
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("session_start resets the auto-refine cadence baseline (fresh on fork/resume)", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    resetOutcome();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-reset-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    await loadConfig(cfgFile);
+    try {
+      const { pi, handlers, ctx, sentMessages } = makeFakePi([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+      ]);
+      continualHarness(pi);
+
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx()); // seed
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx()); // fire #1
+      const afterFirst = sentMessages.length;
+      expect(afterFirst).toBeGreaterThanOrEqual(1);
+
+      // Simulate a fork/resume: session_start should reset the cadence so the
+      // very next turn re-seeds instead of firing immediately.
+      await handlers.get("session_start")!({ reason: "fork" }, ctx());
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 2 }, ctx());
+      expect(sentMessages.length).toBe(afterFirst); // re-seeded, no immediate fire
+
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 3 }, ctx()); // fire #2
+      expect(sentMessages.length).toBe(afterFirst + 1);
     } finally {
       resetAutoRefine();
       resetConfigCache();

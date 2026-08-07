@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_CONFIG,
+  DEFAULT_REF_BUMP,
   loadConfig,
   projectSlug,
   resetConfigCache,
@@ -64,6 +65,33 @@ describe("config", () => {
         expect(cfg.durableScope).toBe("global"); // unknown durableScope → default
         expect(cfg.remindRefine?.everyTurns).toBe(10);
         expect(cfg.remindRefine?.enabled).toBe(false);
+      });
+    });
+
+    it("rejects a non-numeric outcomeImportance.bump → default (prevents NaN corruption)", async () => {
+      // A non-numeric bump must not leak through: it is an arithmetic operand
+      // (importance + bump) and a string would corrupt importance to NaN.
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ outcomeImportance: { enabled: true, bump: "0.1" } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.outcomeImportance?.enabled).toBe(true);
+        expect(cfg.outcomeImportance?.bump).toBe(DEFAULT_REF_BUMP); // string rejected → default
+      });
+    });
+
+    it("passes a valid numeric outcomeImportance.bump through", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ outcomeImportance: { bump: 0.2 } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.outcomeImportance?.bump).toBe(0.2);
+      });
+    });
+
+    it("rejects NaN outcomeImportance.bump → default", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ outcomeImportance: { bump: NaN } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.outcomeImportance?.bump).toBe(DEFAULT_REF_BUMP);
       });
     });
   });

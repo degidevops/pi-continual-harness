@@ -69,9 +69,17 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     proposer: over.proposer ?? "steering",
     outcomeImportance: {
       enabled: over.outcomeImportance?.enabled ?? false,
-      bump: over.outcomeImportance?.bump ?? DEFAULT_REF_BUMP,
+      bump: coerceBump(over.outcomeImportance?.bump),
     },
   };
+}
+
+/** Coerce a user-provided bump to a finite number, else the default. The bump
+ *  is an ARITHMETIC operand (importance + bump), so a non-numeric value must not
+ *  leak through: importance + "0.03" === "0.50.03" → NaN, which would then be
+ *  pruned as below-floor on the next decay. */
+function coerceBump(raw: unknown): number {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : DEFAULT_REF_BUMP;
 }
 
 /** Load the config, merged over defaults. Tolerant: missing/malformed → defaults.

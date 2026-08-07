@@ -11,9 +11,9 @@ import { registerHarness } from "./harness.js";
 import { registerInjection } from "./inject.js";
 import { registerRefine } from "./refine.js";
 import { registerTools } from "./tools.js";
-import { registerReminder } from "./remind.js";
-import { registerAutoRefine } from "./auto-refine.js";
-import { registerOutcome } from "./outcome.js";
+import { registerReminder, resetReminder } from "./remind.js";
+import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
+import { registerOutcome, resetOutcome } from "./outcome.js";
 import { getState, reconstruct, STATE_ENTRY } from "./store.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
@@ -21,6 +21,11 @@ export default function continualHarness(pi: ExtensionAPI): void {
   // reload / resume / fork. This is what makes refinements branch-local and
   // rollback-able via /tree.
   pi.on("session_start", async (_event, ctx) => {
+    // A new/resumed/forked session starts from a fresh cadence baseline: reset
+    // the turn_end counters so a fork does not inherit the parent's window.
+    resetAutoRefine();
+    resetReminder();
+    resetOutcome();
     reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
     const n = getState().items.length;
     if (n > 0) {
@@ -50,5 +55,6 @@ export {
   registerProposer,
   type DeltaProposer,
   type ProposeInput,
+  type ProposedDelta,
   type ProposeResult,
 } from "./proposer.js";
