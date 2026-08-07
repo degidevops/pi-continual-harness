@@ -12,12 +12,15 @@
 // harness_list / harness_mutate tools round-tripping through appendEntry.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import continualHarness from "../src/index.js";
 import { getState, reconstruct, STATE_ENTRY } from "../src/store.js";
+import { loadConfig, resetConfigCache } from "../src/config.js";
+import { resetAutoRefine } from "../src/auto-refine.js";
+import { runRefine } from "../src/refine.js";
 
 type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
 
@@ -302,5 +305,79 @@ describe("/harness command", () => {
     expect(getState().items[0]!.importance).toBeCloseTo(0.6);
     await commands.get("harness")!.handler(`drop ${id}`, ctx());
     expect(getState().items[0]!.importance).toBeCloseTo(0.5);
+  });
+});
+
+describe("runRefine + auto-refine", () => {
+  beforeEach(reset);
+
+  it("runRefine tags the audit entry with source (manual default, auto explicit)", async () => {
+    const branch = [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "fix the login bug" }] } },
+    ];
+    const { pi, commands, ctx, entries } = makeFakePi(branch);
+    continualHarness(pi);
+
+    // manual via /refine command
+    await commands.get("refine")!.handler("5", ctx());
+    // auto via runRefine direct
+    await runRefine(pi, ctx() as unknown as ExtensionCommandContext, { lookback: 5 }, "auto");
+
+    const audits = entries.filter((e) => e.customType === "harness-refinement");
+    expect(audits).toHaveLength(2);
+    expect((audits[0]!.data as { source: string }).source).toBe("manual");
+    expect((audits[1]!.data as { source: string }).source).toBe("auto");
+  });
+
+  it("turn_end triggers auto-refine only when enabled and the cadence elapses", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-auto-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    await loadConfig(cfgFile); // populate the in-process config cache (deterministic)
+    try {
+      const branch = [
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+      ];
+      const { pi, handlers, ctx, sentMessages, entries } = makeFakePi(branch);
+      continualHarness(pi); // turn_end on the fake = auto-refine (last registered)
+
+      // turn 0 seeds the baseline (no fire); turn 1 fires (everyTurns=1)
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx());
+      expect(sentMessages).toHaveLength(0);
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx());
+
+      expect(sentMessages.length).toBeGreaterThanOrEqual(1);
+      expect(sentMessages.at(-1)).toContain("/refine");
+      const audits = entries.filter((e) => e.customType === "harness-refinement");
+      expect(audits).toHaveLength(1);
+      expect((audits[0]!.data as { source: string }).source).toBe("auto");
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("turn_end stays inert when auto-refine is disabled (cached disabled config)", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-auto-off-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: false } }));
+    await loadConfig(cfgFile);
+    try {
+      const { pi, handlers, ctx, sentMessages } = makeFakePi([]);
+      continualHarness(pi);
+      for (let i = 0; i < 200; i++) {
+        await handlers.get("turn_end")!({ type: "turn_end", turnIndex: i }, ctx());
+      }
+      expect(sentMessages).toHaveLength(0);
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

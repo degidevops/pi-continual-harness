@@ -34,13 +34,15 @@ Shipped: store unit tests + `/harness` command smoke tests. **Effort:** ~70 line
 
 Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Effort:** ~190 lines. **Risk:** low.
 
-## Phase 3 — autonomy (opt-in)
+## Phase 3 — DONE (main; unreleased)
 
-- **C auto-refine** — `autoRefine: { enabled, everyTurns }` behind config; reuses
-  the `/refine` steering message.
-  **Mitigations:** default off, frequency cap, audit entry already emitted, branch-local + rollback.
-
-**Effort:** ~80 lines. **Risk:** medium (autonomy).
+- **C auto-refine** — opt-in `turn_end` auto-refine (`src/auto-refine.ts`), behind
+  `autoRefine: { enabled, everyTurns, commit }` in config (default off, 100).
+  Reuses the exact `runRefine()` routine (extracted from `/refine`), so it
+  inherits all safety props: audited `REFINE_ENTRY` tagged `source: "auto"`,
+  branch-local snapshots, `/tree` rollback. Visible: notifies before firing.
+  **Effort:** ~110 lines. **Risk:** medium (autonomy) — mitigated by opt-in +
+  cadence + audit + visibility + rollback.
 
 ## Phase 4 — proposer quality (the big lever)
 

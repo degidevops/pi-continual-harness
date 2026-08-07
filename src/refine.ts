@@ -12,11 +12,11 @@
 // agent loop, is model-agnostic, and keeps every delta visible and reviewable
 // in the transcript. No hidden model calls.
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exportDurable, REFINE_ENTRY } from "./store.js";
 
-const DEFAULT_LOOKBACK_TURNS = 25;
 const DEFAULT_EVIDENCE_BYTES = 16000;
+export const DEFAULT_LOOKBACK_TURNS = 25;
 
 // Minimal entry shape for trajectory walking; kept loose to avoid coupling to
 // pi's internal session entry types.
@@ -35,29 +35,55 @@ export function registerRefine(pi: ExtensionAPI): void {
       "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit]",
     handler: async (args, ctx) => {
       const { lookback, commit } = parseArgs(args);
-      ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)…`);
-
-      const evidence = gatherEvidence(ctx, lookback);
-      const prompt = buildSteeringPrompt(evidence, lookback);
-
-      // Record that a refinement was kicked off (audit trail; branchable).
-      pi.appendEntry(REFINE_ENTRY, { lookback, commit, startedAt: Date.now() });
-
-      if (commit) {
-        // Flush current state to the durable file first so the agent refines
-        // against the same view pi-reflect / pi-mem would see.
-        try {
-          const path = await exportDurable();
-          ctx.ui.notify(`Durable state exported to ${path}`, "info");
-        } catch (err) {
-          ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
-        }
-      }
-
-      pi.sendUserMessage(prompt);
-      ctx.ui.setStatus("harness", undefined);
+      await runRefine(pi, ctx, { lookback, commit });
     },
   });
+}
+
+export interface RefineOptions {
+  lookback?: number;
+  commit?: boolean;
+}
+
+export interface RefineResult {
+  evidenceBytes: number;
+  lookback: number;
+  commit: boolean;
+  source: "manual" | "auto";
+}
+
+/** Core refine routine shared by /refine (manual) and turn_end auto-refine.
+ *  Gathers trajectory evidence, records an audit entry, optionally flushes the
+ *  durable state, then sends the steering user message that drives the agent to
+ *  propose evidence-backed CRUD deltas. `source` tags the audit entry so
+ *  autonomous runs are distinguishable in the transcript. */
+export async function runRefine(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  options: RefineOptions = {},
+  source: "manual" | "auto" = "manual",
+): Promise<RefineResult> {
+  const lookback = options.lookback ?? DEFAULT_LOOKBACK_TURNS;
+  const commit = options.commit ?? false;
+  ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)…`);
+  const evidence = gatherEvidence(ctx, lookback);
+  const prompt = buildSteeringPrompt(evidence, lookback);
+  // Audit trail (branchable via /tree). `source` distinguishes manual /refine
+  // from opt-in auto-refine so autonomous runs are visible in the transcript.
+  pi.appendEntry(REFINE_ENTRY, { lookback, commit, startedAt: Date.now(), source });
+  if (commit) {
+    // Flush current state to the durable file first so the agent refines
+    // against the same view pi-reflect / pi-mem would see.
+    try {
+      const path = await exportDurable();
+      ctx.ui.notify(`Durable state exported to ${path}`, "info");
+    } catch (err) {
+      ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
+    }
+  }
+  pi.sendUserMessage(prompt);
+  ctx.ui.setStatus("harness", undefined);
+  return { evidenceBytes: evidence.length, lookback, commit, source };
 }
 
 function parseArgs(args: string): { lookback: number; commit: boolean } {
@@ -71,7 +97,7 @@ function parseArgs(args: string): { lookback: number; commit: boolean } {
   return { lookback, commit };
 }
 
-function gatherEvidence(ctx: ExtensionCommandContext, lookback: number): string {
+function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
   const entries = ctx.sessionManager.getBranch() as AnyEntry[];
   const messages = entries.filter((e) => e.type === "message" && e.message);
   const recent = messages.slice(-lookback * 2); // ~2 entries per turn (user+assistant)

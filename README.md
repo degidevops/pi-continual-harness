@@ -90,7 +90,8 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 ```json
 {
   "durableScope": "global",
-  "remindRefine": { "enabled": false, "everyTurns": 50 }
+  "remindRefine": { "enabled": false, "everyTurns": 50 },
+  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false }
 }
 ```
 
@@ -101,6 +102,12 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
+- **`autoRefine`** — opt-in autonomous self-improvement (**off by default**).
+  When `enabled`, the agent runs `/refine` itself every `everyTurns` turns
+  (default 100). This is the package's one autonomous-self-mutation path: it
+  reuses the exact `/refine` routine (audited `REFINE_ENTRY` tagged
+  `source: "auto"`, branch-local, `/tree` rollback) and notifies before firing.
+  `commit: true` also flushes durable state on each run.
 
 ## How it works
 
@@ -132,14 +139,13 @@ model-agnostic, and keeps every delta visible and reviewable in the transcript.
 - Two-way durable round-trip with pi-reflect (`/harness import|export|status`).
 - Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
   <id>`.
-- Optional config (`~/.pi/agent/harness.json`): project-local durable scope and
-  an opt-in `turn_end` reminder.
+- Optional config (`~/.pi/agent/harness.json`): project-local durable scope, an
+  opt-in `turn_end` reminder, and opt-in `turn_end` auto-refine (the one
+  autonomous-self-mutation path; off by default).
 
 Open extension points (see `docs/ROADMAP.md`):
 
 - A pluggable delta proposer (currently the agent itself, via steering).
-- Opt-in `turn_end` auto-refine (reminder is wired; autonomous self-mutation is
-  a sharp edge, so the trigger is off by default).
 - pi-mem ingestion of the durable export.
 - Outcome-driven importance (currently model-set + manual nudges).
 

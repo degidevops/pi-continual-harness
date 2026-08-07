@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { DEFAULT_DURABLE_PATH } from "./store.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
+export const DEFAULT_AUTO_EVERY_TURNS = 100;
 
 export interface HarnessConfig {
   durableScope?: "global" | "project";
@@ -23,11 +24,17 @@ export interface HarnessConfig {
     enabled?: boolean;
     everyTurns?: number;
   };
+  autoRefine?: {
+    enabled?: boolean;
+    everyTurns?: number;
+    commit?: boolean;
+  };
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
+  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
 };
 
 export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
@@ -41,6 +48,11 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     remindRefine: {
       enabled: over.remindRefine?.enabled ?? false,
       everyTurns: over.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS,
+    },
+    autoRefine: {
+      enabled: over.autoRefine?.enabled ?? false,
+      everyTurns: over.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS,
+      commit: over.autoRefine?.commit ?? false,
     },
   };
 }
