@@ -82,6 +82,30 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   **Effort:** ~95 lines. **Risk:** medium (autonomy) — mitigated by opt-in +
   promotion-only + persist/rollback + visibility.
 
+## Future extensions (not on the phase plan)
+
+Two items were flagged during the phases as deferred decisions. Neither needs
+core changes — both are reachable through the already-public **proposer
+registry** (`registerProposer()`). Recorded here so they're not lost in phase
+prose.
+
+- **Dedicated-model proposer.** A `DeltaProposer` that makes its own (hidden)
+  LLM call to produce deltas directly, instead of delegating to the agent via a
+  steering message. The interface supports it today; the open question is the
+  tradeoff it introduces — non-visible model spend — which is why it was kept
+  as a separate decision rather than shipped in Phase 4.
+- **Fuzzy `corrections` proposer.** A rule/heuristic proposer that demotes
+  importance from outcome signals (items the agent corrected or contradicted).
+  Phase 5 made the autonomous outcome loop **promotion-only** because
+  correction-side signals are high-false-positive; demotion-from-outcomes is
+  the natural future extension, and it belongs in the proposer registry
+  (auditable, selectable, reviewable) rather than as a silent `turn_end`
+  mutation.
+
+These are open backlog, not commitments. The broader composition space
+(auto-push to pi-mem on a cadence, bi-directional pi-mem sync) is similarly
+open-ended exploration, not a near-term plan.
+
 ## Out of scope (compose instead)
 
 Durable storage engines (pi-mem), offline deep refinement (pi-reflect),
