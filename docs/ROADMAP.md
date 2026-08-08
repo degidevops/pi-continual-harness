@@ -91,9 +91,15 @@ prose.
 
 - **Dedicated-model proposer.** A `DeltaProposer` that makes its own (hidden)
   LLM call to produce deltas directly, instead of delegating to the agent via a
-  steering message. The interface supports it today; the open question is the
-  tradeoff it introduces — non-visible model spend — which is why it was kept
-  as a separate decision rather than shipped in Phase 4.
+  steering message. **The enabler landed on main:** `/refine` now injects a
+  one-shot `complete(prompt, opts?)` into `ProposeInput` (built from
+  `ctx.modelRegistry` + `ctx.model`, honoring `ctx.signal` and a per-call token
+  budget) and records any `modelCall` telemetry a proposer returns in the
+  `harness-refinement` audit entry. What remains is the proposer *logic*
+  (prompt → JSON deltas → parse → validate → sanitize → telemetry), which is a
+  companion-package decision: the tradeoff it introduces (non-visible model
+  spend) is resolved by making the spend **audited** (model/tokens/latency in
+  the branchable audit entry) rather than shipping it invisible in-core.
 - **Fuzzy `corrections` proposer.** A rule/heuristic proposer that demotes
   importance from outcome signals (items the agent corrected or contradicted).
   Phase 5 made the autonomous outcome loop **promotion-only** because

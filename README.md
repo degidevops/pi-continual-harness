@@ -178,9 +178,16 @@ for auto-refine via `proposer` in the [config](#configuration). Both paths are
 audited: the `harness-refinement` entry records which proposer ran and how many
 deltas it applied directly.
 
-A dedicated-model proposer (a hidden LLM call) is the obvious next alternate
-the interface supports, but is intentionally not shipped — non-visible model
-spend is a tradeoff kept as a separate decision (see `docs/ROADMAP.md`).
+A dedicated-model proposer — one that makes its own (hidden) LLM call to
+produce deltas directly — is the obvious next alternate. This package still
+does **not** ship one (hidden model spend is a tradeoff kept as a separate
+decision; see `docs/ROADMAP.md`), but it now **enables** one: when a model is
+available, `/refine` injects a one-shot `complete(prompt, opts?)` into
+`ProposeInput` and records any `modelCall` telemetry a proposer returns
+(model, tokens, latency, ok/error) in the `harness-refinement` audit entry —
+so a companion package can ship a dedicated-model proposer whose spend stays
+**audited, not hidden**. Both `complete` and `modelCall` are optional;
+`steering` and `dedupe` ignore them, so the default behavior is unchanged.
 
 Register your own proposer from another extension (the registry is re-exported
 from the package entry):
@@ -190,7 +197,9 @@ import { registerProposer } from "pi-continual-harness";
 
 registerProposer({
   name: "my-proposer",
-  async propose({ evidence, state }) {
+  async propose({ evidence, state, complete }) {
+    // `complete` is injected when a model is available (undefined otherwise);
+    // a dedicated-model proposer calls it and returns deltas + modelCall telemetry.
     /* inspect evidence + state, return deltas (and/or a steering message) */
     return { deltas: [/* { delta, rationale } */] };
   },
@@ -228,8 +237,10 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 
 Open extension points (see `docs/ROADMAP.md`):
 
-- A dedicated-model proposer (interface ready; the hidden-model-spend tradeoff
-  is a separate decision).
+- A dedicated-model proposer (the enabler landed: `complete` injection +
+  `modelCall` telemetry; the proposer logic itself is left to a companion
+  package — the hidden-model-spend tradeoff is resolved by making the spend
+  audited rather than shipping it invisible).
 - Correction-side outcome signals (promotion is shipped; autonomous demotion
   is high-false-positive, so it is served by `/harness drop`, `prune --decay`,
   and the `dedupe` proposer — a fuzzy `corrections` proposer is the natural

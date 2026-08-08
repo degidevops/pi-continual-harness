@@ -14,14 +14,49 @@
 //     overlap, keeping the higher-importance one. Pure function of state —
 //     deterministic, no model call, fully testable.
 //
-// A dedicated-model proposer (a hidden LLM call) is the obvious next alternate
-// the interface supports, but is intentionally NOT shipped here: it is the one
-// tradeoff (non-visible model spend) the roadmap flags as a separate decision.
+// The interface supports a dedicated-model proposer — one that makes its own
+// hidden LLM call to produce deltas directly, instead of delegating to the
+// agent via a steering message. This package does NOT ship one (hidden model
+// spend is a tradeoff the roadmap keeps as a separate decision), but it DOES
+// inject a one-shot `complete` into ProposeInput when a model is available, so a
+// companion package can register one. The closure is built by runRefine from
+// ctx.modelRegistry; telemetry a proposer returns is recorded in the refine
+// audit entry, so the spend stays visible (audited, not hidden).
 //
 // Extension is open: call registerProposer() from your own extension to add a
 // named proposer, then select it via /refine --proposer <name> or config.
 
 import type { Delta, HarnessItem, HarnessState } from "./types.js";
+
+/** Options for the one-shot model completion injected into ProposeInput. */
+export interface CompleteOptions {
+  /** Resolve and use this model id ("provider/id" or a bare id) instead of the
+   *  active session model. Falls back to the active model if unresolvable. */
+  modelId?: string;
+  /** System prompt wrapping the user prompt. */
+  systemPrompt?: string;
+  /** Max output tokens for the completion (maps to the provider maxTokens). */
+  maxOutputTokens?: number;
+}
+
+/** Result of a one-shot model completion. */
+export interface CompleteResult {
+  /** The assistant's text response. */
+  text: string;
+  /** Token usage, when the provider reports it (for the audit trail). */
+  usage?: { input: number; output: number };
+}
+
+/** Telemetry from a dedicated model call, surfaced in the refine audit entry so
+ *  hidden model spend is visible (which model, tokens, latency, ok/error). */
+export interface ModelCallTelemetry {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  latencyMs?: number;
+  ok: boolean;
+  error?: string;
+}
 
 /** Inputs to a proposer. */
 export interface ProposeInput {
@@ -32,6 +67,11 @@ export interface ProposeInput {
   state: HarnessState;
   /** Lookback window in turns. */
   lookback: number;
+  /** One-shot model completion, injected by runRefine when a model is available.
+   *  Dedicated-model proposers call this to make a hidden completion; rule-based
+   *  and steering proposers ignore it. Undefined when no model is resolvable, so
+   *  a model proposer can no-op (and record an audited failure) rather than throw. */
+  complete?: (prompt: string, opts?: CompleteOptions) => Promise<CompleteResult>;
 }
 
 /** A single delta plus a human-readable reason for the audit trail. */
@@ -49,6 +89,10 @@ export interface ProposeResult {
    * A proposer MAY return both — deltas are applied first, then steering sent.
    */
   steeringMessage?: string;
+  /** Telemetry from a dedicated model call, recorded in the refine audit entry so
+   *  hidden model spend is visible. Set by dedicated-model proposers; ignored by
+   *  rule-based/steering ones. */
+  modelCall?: ModelCallTelemetry;
 }
 
 /** A strategy for turning evidence + state into (or toward) harness deltas. */

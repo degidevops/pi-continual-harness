@@ -18,8 +18,10 @@
 // model spend is a tradeoff the roadmap keeps as a separate decision).
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, exportDurable, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer } from "./proposer.js";
+import type { CompleteOptions, CompleteResult } from "./proposer.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
@@ -82,9 +84,17 @@ export async function runRefine(
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback);
+  // Inject a one-shot model completion (built from ctx) so dedicated-model
+  // proposers can make a hidden LLM call. Undefined when no model is resolvable.
+  const complete = buildComplete(ctx);
   // Pass a defensive copy: proposers are a public extension point and must not
   // be able to mutate the live store outside applyDeltas (no audit / no rollback).
-  const result = await proposer.propose({ evidence, state: snapshotState(), lookback });
+  const result = await proposer.propose({
+    evidence,
+    state: snapshotState(),
+    lookback,
+    ...(complete ? { complete } : {}),
+  });
   const proposedDeltas = result.deltas ?? [];
 
   let applied = 0;
@@ -110,6 +120,9 @@ export async function runRefine(
     proposer: proposer.name,
     applied,
     rationales: proposedDeltas.map((d) => d.rationale),
+    // Hidden model spend made visible: dedicated-model proposers report what the
+    // call cost (model, tokens, latency, ok/error). Absent for rule-based/steering.
+    ...(result.modelCall ? { modelCall: result.modelCall } : {}),
   });
 
   if (commit) {
@@ -179,4 +192,63 @@ function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
     bytes += line.length;
   }
   return lines.join("\n") || "(no recent trajectory evidence found)";
+}
+
+// ---- one-shot model completion injection (for dedicated-model proposers) -------
+//
+// runRefine builds this closure from ctx.modelRegistry + ctx.model and passes it
+// into ProposeInput.complete. A dedicated-model proposer (shipped as a companion
+// package) calls it to produce deltas directly via a hidden completion; the
+// telemetry it returns is recorded in the refine audit entry so the spend stays
+// visible. Rule-based/steering proposers ignore it.
+
+/** Resolve a model id ("provider/id" or a bare id) against the registry, falling
+ *  back to the active session model. Returns undefined if nothing resolves. */
+function resolveModel(ctx: ExtensionContext, modelId?: string): Model<any> | undefined {
+  const registry = ctx.modelRegistry;
+  if (modelId && registry) {
+    const slash = modelId.indexOf("/");
+    if (slash >= 0) {
+      const found = registry.find(modelId.slice(0, slash), modelId.slice(slash + 1));
+      if (found) return found;
+    }
+    const byId =
+      registry.getAvailable().find((m) => m.id === modelId) ??
+      registry.getAll().find((m) => m.id === modelId);
+    if (byId) return byId;
+  }
+  return ctx.model;
+}
+
+/** Build the one-shot completion closure injected into ProposeInput, or undefined
+ *  when no model can be resolved (so a model proposer can no-op gracefully).
+ *  Honors the agent abort signal and a per-call token budget. */
+function buildComplete(
+  ctx: ExtensionContext,
+): ((prompt: string, opts?: CompleteOptions) => Promise<CompleteResult>) | undefined {
+  const registry = ctx.modelRegistry;
+  const active = ctx.model;
+  if (!registry || (!active && registry.getAvailable().length === 0)) return undefined;
+
+  return async (prompt, opts) => {
+    const model = resolveModel(ctx, opts?.modelId);
+    if (!model) throw new Error("no model available for proposer completion");
+    const context: Context = {
+      ...(opts?.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
+      messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+    };
+    const assistant = await registry.complete(model, context, {
+      ...(opts?.maxOutputTokens !== undefined ? { maxTokens: opts.maxOutputTokens } : {}),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+    });
+    const text = assistant.content
+      .filter((c): c is TextContent => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+    const usage = assistant.usage;
+    return {
+      text,
+      ...(usage ? { usage: { input: usage.input, output: usage.output } } : {}),
+    };
+  };
 }

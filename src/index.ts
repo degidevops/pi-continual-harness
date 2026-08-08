@@ -47,13 +47,26 @@ export default function continualHarness(pi: ExtensionAPI): void {
 
 export { STATE_ENTRY };
 
+// Core domain types (re-exported so companion packages — e.g. a dedicated-model
+// proposer — can build and validate deltas without reaching into internal paths).
+export {
+  type AppliedDelta,
+  type ComponentKind,
+  type Delta,
+  type HarnessItem,
+  type HarnessState,
+} from "./types.js";
+
 // Public extension API: other extensions can register their own delta proposer
 // (see src/proposer.ts) and it becomes selectable via /refine --proposer <name>
 // or the `proposer` config key.
 export {
   listProposers,
   registerProposer,
+  type CompleteOptions,
+  type CompleteResult,
   type DeltaProposer,
+  type ModelCallTelemetry,
   type ProposeInput,
   type ProposedDelta,
   type ProposeResult,
