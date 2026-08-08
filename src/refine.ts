@@ -98,15 +98,28 @@ export async function runRefine(
   const proposedDeltas = result.deltas ?? [];
 
   let applied = 0;
+  let applyError: string | undefined;
   if (proposedDeltas.length > 0) {
     // Direct-apply path (rule-based / model proposers): persist each batch the
     // same way harness_mutate does, so /tree rollback covers these too.
-    const appliedDeltas = applyDeltas(
-      proposedDeltas.map((d) => d.delta),
-      (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }),
-    );
-    applied = appliedDeltas.length;
-    ctx.ui.notify(`Proposer "${proposer.name}" applied ${applied} delta(s) directly.`, "info");
+    // applyDeltas is all-or-nothing and re-throws on a bad delta — e.g. a model
+    // proposer's delete-then-update of the same id, or an id removed by a prune
+    // race during the await above. It rolls back in-memory state before throwing,
+    // so we surface the failure as an audited no-op rather than crashing /refine.
+    try {
+      const appliedDeltas = applyDeltas(
+        proposedDeltas.map((d) => d.delta),
+        (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }),
+      );
+      applied = appliedDeltas.length;
+      ctx.ui.notify(`Proposer "${proposer.name}" applied ${applied} delta(s) directly.`, "info");
+    } catch (err) {
+      applyError = (err as Error).message;
+      ctx.ui.notify(
+        `Proposer "${proposer.name}" batch failed: ${applyError} (0 applied, rolled back).`,
+        "warning",
+      );
+    }
   }
 
   // Audit trail (branchable via /tree). `source` distinguishes manual /refine
@@ -123,6 +136,8 @@ export async function runRefine(
     // Hidden model spend made visible: dedicated-model proposers report what the
     // call cost (model, tokens, latency, ok/error). Absent for rule-based/steering.
     ...(result.modelCall ? { modelCall: result.modelCall } : {}),
+    // When a direct-apply batch failed mid-application (rolled back), record why.
+    ...(applyError ? { applyError } : {}),
   });
 
   if (commit) {
@@ -248,6 +263,9 @@ function buildComplete(
     const usage = assistant.usage;
     return {
       text,
+      // Surface the resolved model so a dedicated-model proposer can label its
+      // audit telemetry accurately instead of a vague "active".
+      model: `${model.provider}/${model.id}`,
       ...(usage ? { usage: { input: usage.input, output: usage.output } } : {}),
     };
   };

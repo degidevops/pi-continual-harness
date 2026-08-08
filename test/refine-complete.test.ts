@@ -15,7 +15,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { Model } from "@earendil-works/pi-ai";
 import { runRefine } from "../src/refine.js";
 import { registerProposer } from "../src/proposer.js";
-import { getState, reconstruct } from "../src/store.js";
+import { applyDeltas, getState, reconstruct } from "../src/store.js";
 
 const REFINE_AUDIT = "harness-refinement";
 
@@ -76,15 +76,14 @@ describe("Deliverable A: complete injection", () => {
     };
 
     let receivedComplete: ((p: string) => Promise<unknown>) | undefined;
+    let completeResult: { text: string; model?: string; usage?: { input: number; output: number } } | undefined;
     registerProposer({
       name: "a-thread-complete",
       async propose(input) {
         receivedComplete = input.complete;
         if (!input.complete) return { deltas: [] };
-        const res = (await input.complete("propose deltas", { modelId: "test-mini" })) as {
-          text: string;
-          usage?: { input: number; output: number };
-        };
+        completeResult = await input.complete("propose deltas", { modelId: "test-mini" });
+        const res = completeResult;
         return {
           deltas: [
             {
@@ -127,6 +126,9 @@ describe("Deliverable A: complete injection", () => {
       outputTokens: 3,
       ok: true,
     });
+
+    // (4) the complete closure surfaces the resolved model label for telemetry
+    expect(completeResult?.model).toBe("test/test-mini");
   });
 
   it("forwards maxOutputTokens -> maxTokens on the provider call", async () => {
@@ -239,6 +241,47 @@ describe("Deliverable A: complete injection", () => {
     });
     await runRefine(pi, makeCtx({ model: active, registry }), { proposer: "a-resolve-active" });
     expect((seenModelat(seenModels, 0)).id).toBe("active");
+  });
+});
+
+describe("Deliverable A: apply failure safety", () => {
+  beforeEach(reset);
+
+  it("a proposer batch that throws mid-apply is an audited no-op, not a crash", async () => {
+    // Seed a real item, then return a batch that conflicts within itself:
+    // [delete h_x, update h_x] — applyDeltas deletes h_x then throws on the
+    // update (id gone). Without the try/catch this crashes /refine.
+    const seeded = applyDeltas(
+      [{ op: "create", kind: "memory", content: "seed", evidence: "e", importance: 0.8 }],
+      () => {},
+    );
+    const id = (seeded[0] as { item: { id: string } }).item.id;
+    expect(getState().items).toHaveLength(1);
+
+    registerProposer({
+      name: "a-conflicting-batch",
+      async propose() {
+        return {
+          deltas: [
+            { delta: { op: "delete", id, reason: "gone" }, rationale: "del" },
+            { delta: { op: "update", id, content: "changed" }, rationale: "upd" },
+          ],
+        };
+      },
+    });
+
+    const { pi, entries } = makePi();
+    // No model needed: the proposer returns deltas directly (complete unused).
+    await expect(
+      runRefine(pi, makeCtx({}), { proposer: "a-conflicting-batch" }),
+    ).resolves.toBeDefined();
+
+    // State was rolled back: the item survives, nothing applied.
+    expect(getState().items).toHaveLength(1);
+    expect(getState().items[0]!.id).toBe(id);
+    const audit = entries.find((e) => e.customType === REFINE_AUDIT)!;
+    expect((audit.data as { applied: number }).applied).toBe(0);
+    expect((audit.data as { applyError: string }).applyError).toMatch(/no item with id/);
   });
 });
 

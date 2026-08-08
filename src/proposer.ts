@@ -43,6 +43,8 @@ export interface CompleteOptions {
 export interface CompleteResult {
   /** The assistant's text response. */
   text: string;
+  /** The resolved model label ("provider/id"), for accurate audit telemetry. */
+  model?: string;
   /** Token usage, when the provider reports it (for the audit trail). */
   usage?: { input: number; output: number };
 }
