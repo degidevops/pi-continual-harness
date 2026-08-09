@@ -28,6 +28,32 @@ const IMPORTANCE_FLOOR = 0.3;
 let state: HarnessState = { items: [] };
 let version = 0;
 
+// ---- model binding -------------------------------------------------------
+//
+// Items are strictly per-model (ownerModel = "provider/id"). The model-facing
+// tools (harness_list / harness_mutate) receive NO ctx, so they cannot read
+// the active model at execute time. before_agent_start always fires first in a
+// turn WITH ctx.model, so it caches the active key here; the tools then read
+// the cache to stamp/filter. Undefined cache (no turn started) is treated as
+// "model unknown" — tools fall back gracefully (create orphans, list all).
+let activeModelKey: string | undefined;
+
+/** Canonical owner key for a model: "provider/id". Accepts the structural
+ *  shape of pi-ai's Model (provider + id) without importing the type. */
+export function modelKey(m?: { provider: string; id: string }): string | undefined {
+  return m ? `${m.provider}/${m.id}` : undefined;
+}
+
+/** Cache the active model key (called from before_agent_start). */
+export function setActiveModelKey(key: string | undefined): void {
+  activeModelKey = key;
+}
+
+/** Read the cached active model key (called from the model-facing tools). */
+export function getActiveModelKey(): string | undefined {
+  return activeModelKey;
+}
+
 export function getState(): HarnessState {
   return state;
 }
@@ -51,8 +77,10 @@ function clamp(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-/** Apply a single delta against the in-memory state. Does not persist. */
-function applyOne(delta: Delta): AppliedDelta {
+/** Apply a single delta against the in-memory state. Does not persist.
+ *  `actorModel`, when set, stamps creates and restricts update/delete to that
+ *  model's items (per-model isolation at the model-facing tool boundary). */
+function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
   if (delta.op === "create") {
     const now = Date.now();
     const item: HarnessItem = {
@@ -62,6 +90,9 @@ function applyOne(delta: Delta): AppliedDelta {
       evidence: delta.evidence,
       importance: clamp(delta.importance ?? 0.5),
       active: true,
+      // Owner: explicit delta wins; else the actor model; else orphan (""),
+      // adopted by the active model on first contact.
+      ownerModel: delta.ownerModel ?? actorModel ?? "",
       createdAt: now,
       updatedAt: now,
     };
@@ -73,12 +104,17 @@ function applyOne(delta: Delta): AppliedDelta {
     const idx = state.items.findIndex((i) => i.id === delta.id);
     if (idx < 0) throw new Error(`update: no item with id ${delta.id}`);
     const before = state.items[idx]!;
+    // Per-model isolation: when an actor model is known, a mutation may only
+    // touch that model's items. Cross-model maintenance paths (the dedupe
+    // proposer, /harness keep|drop|prune) call applyDeltas with no actor.
+    assertOwnsItem("update", delta.id, before, actorModel);
     const after: HarnessItem = {
       ...before,
       content: delta.content ?? before.content,
       evidence: delta.evidence ?? before.evidence,
       importance: clamp(delta.importance ?? before.importance),
       active: delta.active ?? before.active,
+      ownerModel: delta.ownerModel ?? before.ownerModel,
       updatedAt: Date.now(),
     };
     state.items[idx] = after;
@@ -88,8 +124,26 @@ function applyOne(delta: Delta): AppliedDelta {
   // delete
   const idx = state.items.findIndex((i) => i.id === delta.id);
   if (idx < 0) throw new Error(`delete: no item with id ${delta.id}`);
+  assertOwnsItem("delete", delta.id, state.items[idx]!, actorModel);
   state.items.splice(idx, 1);
   return { op: "delete", id: delta.id, reason: delta.reason };
+}
+
+/** Enforce that `actorModel` owns `item`; no-op when the actor is unknown
+ *  (manual / cross-model paths). Throws an audited, rollback-triggering error
+ *  otherwise. */
+function assertOwnsItem(
+  op: "update" | "delete",
+  id: string,
+  item: HarnessItem,
+  actorModel?: string,
+): void {
+  if (actorModel === undefined) return;
+  if (item.ownerModel !== actorModel) {
+    throw new Error(
+      `${op}: item ${id} is owned by ${item.ownerModel || "(orphan)"}, not the active model ${actorModel}`,
+    );
+  }
 }
 
 /**
@@ -99,11 +153,12 @@ function applyOne(delta: Delta): AppliedDelta {
 export function applyDeltas(
   deltas: Delta[],
   persist: (snapshot: HarnessState, version: number) => void,
+  actorModel?: string,
 ): AppliedDelta[] {
   const snapshotBefore = { items: state.items.map((i) => ({ ...i })) };
   const applied: AppliedDelta[] = [];
   try {
-    for (const d of deltas) applied.push(applyOne(d));
+    for (const d of deltas) applied.push(applyOne(d, actorModel));
   } catch (err) {
     // Roll back in-memory state on failure.
     state = snapshotBefore;
@@ -123,7 +178,11 @@ export function reconstruct(entries: Iterable<unknown>): void {
       last = entry.data.state;
     }
   }
-  state = last ? { items: last.items.map((i) => ({ ...i })) } : { items: [] };
+  // Normalize legacy snapshots that predate ownerModel: missing → orphan (""),
+  // adopted by the active model on first contact (see adoptOrphans).
+  state = last
+    ? { items: last.items.map((i) => ({ ...i, ownerModel: i.ownerModel ?? "" })) }
+    : { items: [] };
   version = 0;
 }
 
@@ -172,6 +231,28 @@ export function bumpImportance(
   return item;
 }
 
+/** Adopt every orphan item (ownerModel === "") to the given model key. This is
+ *  the migration policy for legacy snapshots / durable imports / items created
+ *  while the active model was unknown: they become owned by the first model to
+ *  claim them. Idempotent: a no-op (no persist) when there are no orphans. */
+export function adoptOrphans(
+  key: string,
+  persist: (snapshot: HarnessState, version: number) => void,
+): number {
+  let adopted = 0;
+  for (const i of state.items) {
+    if (i.ownerModel === "") {
+      i.ownerModel = key;
+      adopted += 1;
+    }
+  }
+  if (adopted > 0) {
+    version += 1;
+    persist(state, version);
+  }
+  return adopted;
+}
+
 export { STATE_ENTRY, REFINE_ENTRY, IMPORTANCE_FLOOR };
 
 // ---- Durable export (composition seam with pi-reflect / pi-mem) -------------
@@ -186,6 +267,7 @@ export async function exportDurable(path = DEFAULT_DURABLE_PATH): Promise<string
     for (const i of items) {
       lines.push(`- **[${i.id}]** (importance ${i.importance.toFixed(2)}) ${i.content}`);
       lines.push(`  - evidence: ${i.evidence}`);
+      if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
     }
     lines.push("");
   }
@@ -241,6 +323,7 @@ interface ParsedItem {
   importance: number;
   content: string;
   evidence: string;
+  ownerModel?: string;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -265,6 +348,7 @@ const RE_H2 = /^##\s+(.*)$/;
 const RE_ID_BULLET = /^-\s+\*\*\[([^\]]+)\]\*\*\s*\(importance\s+([\d.]+)\)\s*(.*)$/;
 const RE_PLAIN_BULLET = /^-\s+(.+)$/;
 const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
+const RE_MODEL = /^\s+-\s+model:\s*(.*)$/i;
 
 /** Parse a durable markdown export into items. Tolerant of pi-reflect's edits. */
 export function parseDurable(text: string): ParsedItem[] {
@@ -293,6 +377,12 @@ export function parseDurable(text: string): ParsedItem[] {
     const ev = line.match(RE_EVIDENCE);
     if (ev) {
       if (pending) pending.evidence = ev[1]!.trim();
+      continue;
+    }
+
+    const mdl = line.match(RE_MODEL);
+    if (mdl) {
+      if (pending) pending.ownerModel = mdl[1]!.trim();
       continue;
     }
 
@@ -361,6 +451,10 @@ export async function reconstructFromDurable(
       existing.evidence = p.evidence;
       existing.importance = clamp(p.importance);
       existing.active = true;
+      // Durable wins on owner too: a present tag sets the owner; an absent tag
+      // (e.g. pi-reflect stripped it) orphans the item so it's adopted by the
+      // active model on first contact — matching the documented round-trip.
+      existing.ownerModel = p.ownerModel ?? "";
       existing.updatedAt = now;
       updated += 1;
     } else {
@@ -372,6 +466,7 @@ export async function reconstructFromDurable(
         evidence: p.evidence,
         importance: clamp(p.importance),
         active: true,
+        ownerModel: p.ownerModel ?? "",
         createdAt: now,
         updatedAt: now,
       });

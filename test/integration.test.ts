@@ -36,6 +36,7 @@ interface FakeCtx {
     getBranch: () => unknown[];
   };
   cwd: string;
+  model: { provider: string; id: string };
 }
 
 function makeFakePi(branch: unknown[]) {
@@ -72,6 +73,7 @@ function makeFakePi(branch: unknown[]) {
     },
     sessionManager: { getBranch: () => branch },
     cwd: "/tmp",
+    model: { provider: "test", id: "main" },
   });
 
   return { pi: pi as unknown as ExtensionAPI, handlers, tools, commands, entries, sentMessages, notifications, statuses, ctx };
@@ -561,5 +563,37 @@ describe("/harness push-mem (Phase 5)", () => {
     await commands.get("harness")!.handler("push-mem", ctx());
     expect(sentMessages).toHaveLength(0);
     expect(notifications.some((n) => /No active items to push/.test(n.msg))).toBe(true);
+  });
+
+  it("--model scopes the push to one owner model", async () => {
+    const { pi, commands, ctx, sentMessages } = makeFakePi([]);
+    continualHarness(pi);
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "sonnet fact", evidence: "e", ownerModel: "anthropic/sonnet" },
+        { op: "create", kind: "memory", content: "gemini fact", evidence: "e", ownerModel: "google/gemini" },
+      ] as Delta[],
+      () => {},
+    );
+    await commands.get("harness")!.handler("push-mem --all --model anthropic/sonnet", ctx());
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).toContain("sonnet fact");
+    expect(sentMessages[0]).not.toContain("gemini fact");
+  });
+
+  it("--model active resolves to the model driving the command", async () => {
+    const { pi, commands, ctx, sentMessages } = makeFakePi([]);
+    continualHarness(pi);
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "current model fact", evidence: "e", ownerModel: "test/main" },
+        { op: "create", kind: "memory", content: "other model fact", evidence: "e", ownerModel: "other/model" },
+      ] as Delta[],
+      () => {},
+    );
+    await commands.get("harness")!.handler("push-mem --all --model active", ctx());
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).toContain("current model fact");
+    expect(sentMessages[0]).not.toContain("other model fact");
   });
 });
