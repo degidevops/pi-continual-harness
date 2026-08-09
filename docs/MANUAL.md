@@ -281,9 +281,11 @@ Durable I/O and importance hygiene. Subcommands:
 /harness status ./some-file.md
 ```
 
-Reports active/total counts broken down by kind, plus the durable file's
-presence and last-modified time. The path defaults to the resolved durable path
-(global or project scope); an explicit non-flag argument overrides it.
+Reports whole-store active/total counts broken down by kind (status is a
+whole-store command), annotated with the active model's share, plus the durable
+file's presence and last-modified time. The path defaults to the resolved
+durable path (global or project scope); an explicit non-flag argument overrides
+it.
 
 #### `export [path]`
 
@@ -408,6 +410,14 @@ harness_mutate({ deltas: Delta[] })   // 1–20 deltas per call
 Applies a batch of structured CRUD deltas **atomically** (all-or-nothing). Each
 `create` requires `evidence`. Prefer many small surgical deltas over wholesale
 rewrites.
+
+**Per-model isolation.** The active model is the *actor*: every `create` is
+stamped with it, and `update`/`delete` may target only items the active model
+owns — a delta aimed at another model's item rolls the whole batch back with a
+clear error. (The cross-model maintenance paths — the `dedupe` proposer and
+`/harness keep|drop|prune` — pass no actor, so they are unaffected.) When no
+model is known (no turn started), `create`s become orphans (adopted next turn)
+and `update`/`delete` are unscoped.
 
 **Delta shapes:**
 
@@ -564,7 +574,7 @@ propose stage is **pluggable** via a registry ([`src/proposer.ts`](../src/propos
 | Name | Strategy | Model call? | Select with |
 |---|---|---|---|
 | `steering` (default) | Delegates reasoning to the agent via a steering message; reuses the agent loop. | No (uses the main loop) | default, or `--proposer steering` |
-| `dedupe` | Rule-based: drops near-duplicate **active** items by token Jaccard ≥ **0.6** (same kind), keeping the higher-importance one. Greedy, contradiction-free. | No | `--proposer dedupe`, or `"proposer": "dedupe"` |
+| `dedupe` | Rule-based: drops near-duplicate **active** items by token Jaccard ≥ **0.6** (same kind **and same owner model** — never across models), keeping the higher-importance one. Greedy, contradiction-free. | No | `--proposer dedupe`, or `"proposer": "dedupe"` |
 
 The `dedupe` proposer orders active items by importance descending; the first is
 always a keeper, and each later item is compared only against keepers, so a
@@ -661,8 +671,9 @@ This is the package's **first** opt-in autonomous-mutation path.
 `outcomeImportance: { enabled, bump }` — **autonomous importance promotion**.
 
 - Scans **new** assistant output each turn for `[h_xxxx]` citation tags matching
-  **active** item ids. A citation is unambiguous *positive* evidence the item was
-  useful.
+  **active** item ids **owned by the active model** (only that model's items are
+  injected, so only those can be cited). A citation is unambiguous *positive*
+  evidence the item was useful.
 - Bumps each referenced item's importance by **+`bump`** (default **0.03**,
   clamped to `[0,1]`) and touches `updatedAt`, so promoted items survive
   time-based decay.
