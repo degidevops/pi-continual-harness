@@ -3,6 +3,16 @@
 //   /harness status [path]               counts + durable file presence/mtime
 //   /harness export [path]               write active items to a markdown file
 //   /harness import [--prune] [path]     parse it back and merge (durable wins)
+//   /harness run-subagent <id>           execute a subagent spec from harness
+//   /harness run-skill <id>              execute an executable skill from harness
+//   /harness cross-model <on|off>        enable/disable cross-model shared pool
+//   /harness cross-model-optin           opt current model into shared pool
+//   /harness cross-model-optout          opt current model out of shared pool
+//   /harness promote <id>                promote item to shared pool
+//   /harness demote <id>                 demote item from shared pool
+//   /harness outcome <deltaId> <success|failure>  record outcome for delta
+//   /harness promotion-candidates        list items eligible for promotion
+//   /harness demotion-candidates         list items eligible for demotion
 //
 // export writes the active items to ~/.pi/agent/harness-state.md (best-effort);
 // import parses that file and merges into the live store. Because pi-reflect
@@ -21,17 +31,31 @@ import {
   getState,
   modelKey,
   reconstructFromDurable,
+  promoteToShared,
+  demoteFromShared,
+  setCrossModelEnabled,
+  optIntoSharedPool,
+  optOutOfSharedPool,
+  recordOutcome,
+  getPromotionCandidates,
+  getDemotionCandidates,
 } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
+import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec } from "./orchestration.js";
 import type { ComponentKind, HarnessItem } from "./types.js";
 
 export function registerHarness(pi: ExtensionAPI): void {
   pi.registerCommand("harness", {
     description:
-      "Durable harness-state I/O + importance hygiene. Subcommands: " +
+      "Durable harness-state I/O + importance hygiene + orchestration + cross-model + outcomes. Subcommands: " +
       "import [--prune] [path] · export [path] · status [path] · " +
       "prune [--decay <days>] · keep <id> · drop <id> · " +
-      "push-mem [--all|--kind <kind>|--model <provider/id|active>] (persist active items to pi-mem).",
+      "push-mem [--all|--kind <kind>|--model <provider/id|active>] · " +
+      "run-subagent <id> · run-skill <id> · " +
+      "cross-model <on|off> · cross-model-optin · cross-model-optout · " +
+      "promote <id> · demote <id> · " +
+      "outcome <deltaId> <success|failure> · " +
+      "promotion-candidates · demotion-candidates",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "status").toLowerCase();
@@ -54,6 +78,36 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
         case "push-mem":
           await handlePushMem(pi, ctx, rest);
+          return;
+        case "run-subagent":
+          await handleRunSubagent(pi, ctx, rest);
+          return;
+        case "run-skill":
+          await handleRunSkill(ctx, rest);
+          return;
+        case "cross-model":
+          await handleCrossModel(pi, ctx, rest);
+          return;
+        case "cross-model-optin":
+          await handleCrossModelOptin(pi, ctx, rest);
+          return;
+        case "cross-model-optout":
+          await handleCrossModelOptout(pi, ctx, rest);
+          return;
+        case "promote":
+          await handlePromote(pi, ctx, rest);
+          return;
+        case "demote":
+          await handleDemote(pi, ctx, rest);
+          return;
+        case "outcome":
+          await handleOutcome(pi, ctx, rest);
+          return;
+        case "promotion-candidates":
+          await handlePromotionCandidates(ctx, rest);
+          return;
+        case "demotion-candidates":
+          await handleDemotionCandidates(ctx, rest);
           return;
         case "status":
         default:
@@ -232,6 +286,246 @@ async function handlePushMem(
   ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
 }
 
+async function handleRunSubagent(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const id = rest.find((a) => a && !a.startsWith("-"));
+  if (!id) {
+    ctx.ui.notify(
+      `"/harness run-subagent" requires an item id (see /harness status or harness_list).`,
+      "warning",
+    );
+    return;
+  }
+  const item = getState().items.find((i) => i.id === id);
+  if (!item) {
+    ctx.ui.notify(`No harness item with id ${id}.`, "warning");
+    return;
+  }
+  if (item.kind !== "subagent") {
+    ctx.ui.notify(`Item ${id} is not a subagent (kind: ${item.kind}).`, "warning");
+    return;
+  }
+  if (!item.active) {
+    ctx.ui.notify(`Item ${id} is inactive.`, "warning");
+    return;
+  }
+
+  const spec = parseSubagentSpec(item);
+  if (!spec) {
+    ctx.ui.notify(`Could not parse subagent spec from item ${id}.`, "warning");
+    return;
+  }
+
+  ctx.ui.setStatus("harness", `Executing subagent ${id}…`);
+  try {
+    const result = await executeSubagentSpec(ctx, spec);
+    ctx.ui.notify(
+      `Subagent ${id} started (run: ${result.runId}, agent: ${result.agent}).`,
+      "info",
+    );
+  } catch (err) {
+    ctx.ui.notify(`Subagent execution failed: ${(err as Error).message}`, "error");
+  }
+  ctx.ui.setStatus("harness", undefined);
+}
+
+async function handleRunSkill(
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const id = rest.find((a) => a && !a.startsWith("-"));
+  if (!id) {
+    ctx.ui.notify(
+      `"/harness run-skill" requires an item id (see /harness status or harness_list).`,
+      "warning",
+    );
+    return;
+  }
+  const item = getState().items.find((i) => i.id === id);
+  if (!item) {
+    ctx.ui.notify(`No harness item with id ${id}.`, "warning");
+    return;
+  }
+  if (item.kind !== "skill") {
+    ctx.ui.notify(`Item ${id} is not a skill (kind: ${item.kind}).`, "warning");
+    return;
+  }
+  if (!item.active) {
+    ctx.ui.notify(`Item ${id} is inactive.`, "warning");
+    return;
+  }
+
+  ctx.ui.setStatus("harness", `Executing skill ${id}…`);
+  try {
+    const result = await maybeExecuteSkill(ctx, item);
+    if (!result) {
+      ctx.ui.notify(`Skill ${id} is not executable (no language/entryPoint in front-matter).`, "warning");
+      return;
+    }
+    ctx.ui.notify(
+      `Skill ${id} executed (exit: ${result.exitCode}): ${result.output.slice(0, 200)}${result.output.length > 200 ? "…" : ""}`,
+      result.exitCode === 0 ? "info" : "error",
+    );
+    if (result.error) {
+      ctx.ui.notify(`Error: ${result.error}`, "error");
+    }
+  } catch (err) {
+    ctx.ui.notify(`Skill execution failed: ${(err as Error).message}`, "error");
+  }
+  ctx.ui.setStatus("harness", undefined);
+}
+
+// ---- Cross-model sharing commands (Phase 3 / B2) -------------------------
+
+async function handleCrossModel(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const action = rest[0]?.toLowerCase();
+  if (action !== "on" && action !== "off") {
+    ctx.ui.notify(`Usage: /harness cross-model <on|off>`, "warning");
+    return;
+  }
+  const enabled = action === "on";
+  setCrossModelEnabled(enabled, (snapshot, ver) => {
+    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+  });
+  ctx.ui.notify(`Cross-model sharing ${enabled ? "enabled" : "disabled"}.`, "info");
+}
+
+async function handleCrossModelOptin(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  _rest: string[],
+): Promise<void> {
+  const key = modelKey(ctx.model);
+  if (!key) {
+    ctx.ui.notify("No active model to opt in.", "warning");
+    return;
+  }
+  optIntoSharedPool(key, (snapshot, ver) => {
+    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+  });
+  ctx.ui.notify(`Model ${key} opted into shared pool.`, "info");
+}
+
+async function handleCrossModelOptout(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  _rest: string[],
+): Promise<void> {
+  const key = modelKey(ctx.model);
+  if (!key) {
+    ctx.ui.notify("No active model to opt out.", "warning");
+    return;
+  }
+  optOutOfSharedPool(key, (snapshot, ver) => {
+    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+  });
+  ctx.ui.notify(`Model ${key} opted out of shared pool.`, "info");
+}
+
+async function handlePromote(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const id = rest.find((a) => a && !a.startsWith("-"));
+  if (!id) {
+    ctx.ui.notify(`"/harness promote" requires an item id.`, "warning");
+    return;
+  }
+  const item = promoteToShared(id, (snapshot, ver) => {
+    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+  });
+  if (!item) {
+    ctx.ui.notify(`No harness item with id ${id} or already shared.`, "warning");
+    return;
+  }
+  ctx.ui.notify(`Item ${id} promoted to shared pool.`, "info");
+}
+
+async function handleDemote(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const id = rest.find((a) => a && !a.startsWith("-"));
+  if (!id) {
+    ctx.ui.notify(`"/harness demote" requires an item id.`, "warning");
+    return;
+  }
+  const key = modelKey(ctx.model) ?? "";
+  const item = demoteFromShared(id, key, (snapshot, ver) => {
+    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+  });
+  if (!item) {
+    ctx.ui.notify(`No shared item with id ${id}.`, "warning");
+    return;
+  }
+  ctx.ui.notify(`Item ${id} demoted to model ${key || "(orphan)"}.`, "info");
+}
+
+// ---- Outcome tracking commands (Phase 3 / B3) ----------------------------
+
+async function handleOutcome(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const deltaId = rest[0];
+  const result = rest[1]?.toLowerCase();
+  if (!deltaId || (result !== "success" && result !== "failure")) {
+    ctx.ui.notify(`Usage: /harness outcome <deltaId> <success|failure>`, "warning");
+    return;
+  }
+  // Get current turn index from session
+  const entries = ctx.sessionManager.getBranch() as any[];
+  const turnIndex = entries.filter((e) => e.type === "message" && e.message?.role === "assistant").length;
+
+  recordOutcome(
+    { deltaId, success: result === "success", turnIndex },
+    (snapshot, ver) => {
+      pi.appendEntry("harness-state", { state: snapshot, version: ver });
+    },
+  );
+  ctx.ui.notify(`Outcome recorded for delta ${deltaId}: ${result}.`, "info");
+}
+
+async function handlePromotionCandidates(
+  ctx: ExtensionCommandContext,
+  _rest: string[],
+): Promise<void> {
+  const candidates = getPromotionCandidates();
+  if (candidates.length === 0) {
+    ctx.ui.notify("No promotion candidates found.", "info");
+    return;
+  }
+  const lines = candidates.map(
+    (i) => `[${i.id}] (importance ${i.importance.toFixed(2)}, apps: ${i.applications ?? 0}, fails: ${i.failures ?? 0}) ${i.content.slice(0, 80)}`,
+  );
+  ctx.ui.notify(`Promotion candidates:\n${lines.join("\n")}`, "info");
+}
+
+async function handleDemotionCandidates(
+  ctx: ExtensionCommandContext,
+  _rest: string[],
+): Promise<void> {
+  const candidates = getDemotionCandidates();
+  if (candidates.length === 0) {
+    ctx.ui.notify("No demotion candidates found.", "info");
+    return;
+  }
+  const lines = candidates.map(
+    (i) => `[${i.id}] (importance ${i.importance.toFixed(2)}, apps: ${i.applications ?? 0}, fails: ${i.failures ?? 0}, ratio: ${((i.failures ?? 0) / Math.max(1, i.applications ?? 1)).toFixed(2)}) ${i.content.slice(0, 80)}`,
+  );
+  ctx.ui.notify(`Demotion candidates:\n${lines.join("\n")}`, "warning");
+}
+
 async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
   const path = await resolvePath(rest, ctx);
   const items = getState().items;
@@ -250,12 +544,16 @@ async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promi
   } catch {
     fileState = `none at ${path}`;
   }
+  const crossModel = getState().crossModel;
+  const crossModelStatus = crossModel?.enabled
+    ? `Cross-model: ON (${crossModel.optedInModels?.length ?? 0} opted in)`
+    : "Cross-model: OFF";
   ctx.ui.setStatus("harness", undefined);
   ctx.ui.notify(
     `Harness: ${active.length} active / ${items.length} total — ` +
       `prompt ${counts.prompt}, memory ${counts.memory}, skill ${counts.skill}, subagent ${counts.subagent}.` +
       (key ? ` ${mine} active for [${key}] across ${models.length} model(s).` : "") +
-      ` Durable: ${fileState}.`,
+      ` ${crossModelStatus}. Durable: ${fileState}.`,
     "info",
   );
 }

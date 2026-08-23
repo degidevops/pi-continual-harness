@@ -13,12 +13,15 @@
 // default): importance-ordered, capped per kind and by a total token budget, so
 // the block stays bounded as the harness accumulates. Configurable / opt-out via
 // harness.json `injection`; the legacy "all items, in order" mode is a toggle.
+//
+// Phase 3 / B2: Cross-model sharing — opted-in models also receive items with
+// ownerModel="shared" in addition to their own items.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { adoptOrphans, getState, modelKey, setActiveModelKey } from "./store.js";
+import { adoptOrphans, getState, modelKey, setActiveModelKey, optIntoSharedPool } from "./store.js";
 import { KIND_ORDER, selectForInjection, type InjectionConfig } from "./select.js";
 import { loadConfig } from "./config.js";
-import type { ComponentKind } from "./types.js";
+import type { ComponentKind, HarnessItem, HarnessState } from "./types.js";
 
 const TITLES: Record<ComponentKind, string> = {
   prompt: "Self-improved prompt notes",
@@ -33,11 +36,29 @@ const TITLES: Record<ComponentKind, string> = {
  * total token budget (see select.ts). Only active items whose ownerModel ===
  * ownerKey are ever considered. An undefined ownerKey (no active model) renders
  * nothing — isolation is strict: unknown model → inject nothing.
+ *
+ * If cross-model sharing is enabled and the model is opted in, also includes
+ * items with ownerModel="shared".
  */
 export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): string {
   if (ownerKey === undefined) return "";
-  const items = getState().items;
-  if (items.length === 0) return "";
+  const state = getState();
+  if (state.items.length === 0) return "";
+
+  // Build the effective item list: own items + shared items (if opted in)
+  let items: HarnessItem[] = state.items;
+  const crossModel = state.crossModel;
+  const isOptedIn = crossModel?.enabled && crossModel?.optedInModels?.includes(ownerKey);
+
+  if (isOptedIn) {
+    // Include shared items in addition to own items
+    items = state.items.filter(
+      (i) => i.ownerModel === ownerKey || i.ownerModel === "shared",
+    );
+  } else {
+    // Strict per-model isolation (default)
+    items = state.items.filter((i) => i.ownerModel === ownerKey);
+  }
 
   const { selected, omitted } = selectForInjection(items, ownerKey, cfg);
   if (selected.length === 0) return "";
@@ -81,6 +102,14 @@ export function registerInjection(pi: ExtensionAPI): void {
       adoptOrphans(key, (snapshot, ver) => {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });
+      // Auto-opt-in to shared pool if cross-model sharing is enabled (config-driven)
+      // This is a soft opt-in; the model can opt-out via /harness cross-model-optout
+      const config = await loadConfig();
+      if (config.crossModel?.enabled) {
+        optIntoSharedPool(key, (snapshot, ver) => {
+          pi.appendEntry("harness-state", { state: snapshot, version: ver });
+        });
+      }
     }
     // Read the injection policy from config (cached; tolerant). The default is
     // ON — importance-ordered + bounded — so a growing harness never balloons

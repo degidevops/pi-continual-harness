@@ -131,6 +131,90 @@ export const steeringProposer: DeltaProposer = {
   },
 };
 
+// ---- rule-based alternate: signal (gate proposer) -------------------------
+//
+// Cheap, heuristic gate that detects HIGH-SIGNAL turns worthy of a refine:
+//   1. Tool errors (tool_call with isError=true)
+//   2. Explicit user corrections ("sebenarnya", "salah", "bukan begitu", "kurang", "harusnya")
+//   3. Task boundary: new user message after a long gap (no messages for N turns)
+//   4. Explicit refine request (user says "refine", "perbaiki", "update harness")
+//
+// Returns deltas directly when ANY signal fires (so refine runs immediately),
+// else returns {} (no-op) to skip the expensive steering proposer.
+// Pure function of evidence — no model call, fully testable.
+
+const CORRECTION_PATTERNS = [
+  /\bsebenarnya\b/i,
+  /\bsalah\b/i,
+  /\bbukan begitu\b/i,
+  /\bkurang\b/i,
+  /\bharusnya\b/i,
+  /\bbetulnya\b/i,
+  /\bseharusnya\b/i,
+  /\bjangan\b/i,
+];
+
+const REFINE_TRIGGER_PATTERNS = [
+  /\brefine\b/i,
+  /\bperbaiki\b/i,
+  /\bupdate harness\b/i,
+  /\bharness.*update\b/i,
+  /\bcatat\b/i,
+  /\bingat\b/i,
+];
+
+function hasToolError(evidence: string): boolean {
+  return /\[tool\].*\berror\b/i.test(evidence) ||
+         /\[assistant\].*\btool.*error\b/i.test(evidence) ||
+         /isError.*true/i.test(evidence);
+}
+
+function hasUserCorrection(evidence: string): boolean {
+  const userMsgs = evidence.split('\n').filter(l => l.startsWith('[user]'));
+  return userMsgs.some(msg => CORRECTION_PATTERNS.some(p => p.test(msg)));
+}
+
+function hasRefineTrigger(evidence: string): boolean {
+  const userMsgs = evidence.split('\n').filter(l => l.startsWith('[user]'));
+  return userMsgs.some(msg => REFINE_TRIGGER_PATTERNS.some(p => p.test(msg)));
+}
+
+function hasTaskBoundary(evidence: string, lookback: number): boolean {
+  const userLines = evidence.split('\n').filter(l => l.startsWith('[user]'));
+  if (userLines.length <= 1) return false;
+  const totalEntries = evidence.split('\n').length;
+  return totalEntries < lookback * 0.3;
+}
+
+export const signalProposer: DeltaProposer = {
+  name: "signal",
+  async propose({ evidence, lookback }): Promise<ProposeResult> {
+    const signals: string[] = [];
+    
+    if (hasToolError(evidence)) signals.push("tool_error");
+    if (hasUserCorrection(evidence)) signals.push("user_correction");
+    if (hasRefineTrigger(evidence)) signals.push("refine_trigger");
+    if (hasTaskBoundary(evidence, lookback)) signals.push("task_boundary");
+    
+    if (signals.length === 0) {
+      return {}; // no-op: skip refine, no signal detected
+    }
+    
+    return {
+      deltas: [{
+        delta: {
+          op: "create",
+          kind: "prompt",
+          content: `Signal detected: ${signals.join(", ")} — review trajectory for improvements`,
+          evidence: `Auto-detected signals: ${signals.join(", ")} in last ${lookback} turns`,
+          importance: 0.6,
+        },
+        rationale: `signal gate: ${signals.join(", ")} triggered refine`,
+      }],
+    };
+  },
+};
+
 // ---- rule-based alternate: dedupe -----------------------------------------
 
 export const DEDUPE_THRESHOLD = 0.6;
@@ -206,6 +290,7 @@ export const dedupeProposer: DeltaProposer = {
 const registry = new Map<string, DeltaProposer>([
   ["steering", steeringProposer],
   ["dedupe", dedupeProposer],
+  ["signal", signalProposer],
 ]);
 
 /** Register (or replace) a named proposer. For external extensions. */

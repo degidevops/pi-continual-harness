@@ -19,12 +19,20 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, exportDurable, modelKey, REFINE_ENTRY, snapshotState } from "./store.js";
+import { applyDeltas, exportDurable, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
 import { getProposer } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
+
+/** Test hook: reset internal cursors (resets the persisted cursor in state). */
+export function resetRefineCursor(pi?: ExtensionAPI): void {
+  if (pi) {
+    // When called with pi, persist the reset
+    setReviewCursor(-1, -1, (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }));
+  }
+}
 
 // Minimal entry shape for trajectory walking; kept loose to avoid coupling to
 // pi's internal session entry types.
@@ -40,7 +48,7 @@ type AnyEntry = {
 export function registerRefine(pi: ExtensionAPI): void {
   pi.registerCommand("refine", {
     description:
-      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe]",
+      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe|signal]",
     handler: async (args, ctx) => {
       const { lookback, commit, proposer } = parseArgs(args);
       await runRefine(pi, ctx, { lookback, commit, ...(proposer ? { proposer } : {}) });
@@ -78,12 +86,19 @@ export async function runRefine(
   options: RefineOptions = {},
   source: "manual" | "auto" = "manual",
 ): Promise<RefineResult> {
+  const entries = ctx.sessionManager.getBranch() as AnyEntry[];
+  const messages = entries.filter((e) => e.type === "message" && e.message);
   const lookback = options.lookback ?? DEFAULT_LOOKBACK_TURNS;
   const commit = options.commit ?? false;
   const proposer = getProposer(options.proposer);
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
-  const evidence = gatherEvidence(ctx, lookback);
+  const evidence = gatherEvidence(ctx, lookback, messages);
+  // Persist the cursor immediately so it's captured in the next state snapshot
+  setReviewCursor(messages.length, messages.length, (snapshot, ver) => 
+    pi.appendEntry("harness-state", { state: snapshot, version: ver })
+  );
+  
   // Inject a one-shot model completion (built from ctx) so dedicated-model
   // proposers can make a hidden LLM call. Undefined when no model is resolvable.
   const complete = buildComplete(ctx);
@@ -194,10 +209,19 @@ function parseArgs(args: string): {
   return { lookback, commit, proposer };
 }
 
-function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
-  const entries = ctx.sessionManager.getBranch() as AnyEntry[];
-  const messages = entries.filter((e) => e.type === "message" && e.message);
-  const recent = messages.slice(-lookback * 2); // ~2 entries per turn (user+assistant)
+function gatherEvidence(ctx: ExtensionContext, lookback: number, messages: AnyEntry[]): string {
+  // Incremental cursor (A1): use persisted cursor from store
+  const lastIdx = getLastReviewedIndex();
+  
+  let startIdx = 0;
+  if (lastIdx >= 0 && lastIdx < messages.length) {
+    startIdx = lastIdx;
+  } else if (lastIdx === -1) {
+    // First refine in this session: use lookback window from the end
+    startIdx = Math.max(0, messages.length - lookback * 2);
+  }
+  
+  const recent = messages.slice(startIdx);
   const lines: string[] = [];
   let bytes = 0;
   for (const e of recent) {
@@ -216,7 +240,8 @@ function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
     lines.push(line);
     bytes += line.length;
   }
-  return lines.join("\n") || "(no recent trajectory evidence found)";
+  
+  return lines.join("\n") || "(no new trajectory evidence since last refine)";
 }
 
 // ---- one-shot model completion injection (for dedicated-model proposers) -------

@@ -53,6 +53,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 /refine 50           # review last 50 turns
 /refine 25 --commit  # also export durable state to ~/.pi/agent/harness-state.md
 /refine --proposer dedupe  # run the rule-based dedupe proposer instead of steering
+/refine --proposer signal  # run the cheap gate proposer (detects tool errors, user corrections, task boundaries)
 ```
 
 Durable I/O (round-trip with pi-reflect):
@@ -65,6 +66,16 @@ Durable I/O (round-trip with pi-reflect):
 /harness keep <id>               # nudge importance up (+0.1)
 /harness drop <id>               # nudge importance down (−0.1)
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
+/harness run-subagent <id>       # execute a subagent spec from harness
+/harness run-skill <id>          # execute an executable skill from harness
+/harness cross-model <on|off>    # enable/disable cross-model shared pool
+/harness cross-model-optin       # opt current model into shared pool
+/harness cross-model-optout      # opt current model out of shared pool
+/harness promote <id>            # promote item to shared pool
+/harness demote <id>             # demote item from shared pool
+/harness outcome <deltaId> <success|failure>  # record outcome for delta
+/harness promotion-candidates    # list items eligible for promotion
+/harness demotion-candidates     # list items eligible for demotion
 ```
 
 `import` reconciles the file into the live store: items whose id matches an
@@ -85,6 +96,7 @@ The model-facing tools:
 - `harness_mutate { deltas: [...] }` — apply a batch of `create` / `update` /
   `delete` deltas. Every `create` requires `evidence`. New items are stamped
   automatically with the active model (see [Model binding](#model-binding-per-model-isolation)).
+  **When creating/updating `subagent` or `skill` items, they are automatically executed** (see [Live sub-agent orchestration](#live-sub-agent-orchestration-a4)).
 
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
@@ -115,11 +127,19 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 ```json
 {
   "durableScope": "global",
-  "proposer": "steering",
+  "proposer": "signal",
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
-  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false },
-  "outcomeImportance": { "enabled": false, "bump": 0.03 }
+  "autoRefine": { "enabled": true, "everyTurns": 1, "commit": false },
+  "outcomeImportance": { "enabled": false, "bump": 0.03 },
+  "outcomeEvaluation": {
+    "enabled": false,
+    "promoteBump": 0.02,
+    "demotePenalty": 0.05,
+    "minApplications": 3,
+    "failureRatioThreshold": 0.5
+  },
+  "crossModel": { "enabled": false }
 }
 ```
 
@@ -133,44 +153,137 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   10) per kind and `maxTokens` (default 1500) total. Set `enabled: false` to
   restore the legacy "inject all items, in store order" behaviour.
 - **`proposer`** — which delta proposer `/refine` and auto-refine use. Defaults
-  to `steering` (the agent reasons via a steering message). `dedupe` applies a
-  rule-based dedupe directly. See [Proposers](#proposers).
+  to `signal` (cheap gate: detects tool errors, user corrections, task boundaries,
+  explicit refine requests; escalates to steering only when signals fire).
+  `steering` delegates reasoning to the agent. `dedupe` applies a rule-based
+  dedupe directly. See [Proposers](#proposers).
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
-- **`autoRefine`** — opt-in autonomous self-improvement (**off by default**).
-  When `enabled`, the agent runs `/refine` itself every `everyTurns` turns
-  (default 100). It is one of the package's opt-in autonomous paths: it reuses
-  the exact `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`,
-  branch-local, `/tree` rollback) and notifies before firing. `commit: true`
-  also flushes durable state on each run.
-- **`outcomeImportance`** — opt-in autonomous **promotion** loop (**off by
-  default**). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
+- **`autoRefine`** — autonomous self-improvement (**on by default**, every turn).
+  Runs a two-stage gate: (1) CHEAP `signal` proposer detects HIGH-SIGNAL turns
+  (tool errors, user corrections, task boundaries, explicit refine requests);
+  (2) Only if signals detected, ESCALATE to the configured proposer
+  (default: `signal` which applies the signal note directly, or `steering` for
+  full agent reasoning). This avoids noise from running expensive steering on
+  low-signal turns while being genuinely online/reset-free. Reuses the exact
+  `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`, branch-local,
+  `/tree` rollback). Notifies before firing. `commit: true` also flushes durable
+  state on each run.
+- **`outcomeImportance`** — opt-in autonomous **promotion** loop (off by
+  default). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
   turn's output. Referenced items gain importance and get their `updatedAt`
-  touched (so they survive time-based decay); ignored items keep decaying. This
-  is the package's second opt-in autonomous path — promotion only, never
-  deletes, persisted/branchable like `harness_mutate`. Autonomous demotion from
-  outcomes is intentionally NOT done (high false-positive); use `/harness drop`,
-  `prune --decay`, or the `dedupe` proposer for that.
+  touched (so they survive time-based decay); ignored items keep decaying.
+  Promotion only, never deletes, persisted/branchable like `harness_mutate`.
+  Autonomous demotion from citations is intentionally NOT done (high false-positive);
+  use `/harness drop`, `prune --decay`, or the `dedupe` proposer for that.
+- **`outcomeEvaluation`** — opt-in **closed-loop outcome evaluation (B3)** (off
+  by default). When `enabled`, automatically correlates applied deltas with
+  task outcomes at `turn_end`: detects success/failure from tool errors and
+  explicit user corrections ("salah", "sebenarnya", "harusnya", "perbaiki",
+  "ulang"), then promotes (`promoteBump`, default 0.02) on success or demotes
+  (`demotePenalty`, default 0.05) on failure. Items with failure ratio ≥
+  `failureRatioThreshold` (default 0.5) after `minApplications` (default 3)
+  are auto-demoted further. This closes the fitness loop: useful deltas rise,
+  harmful ones retire. All mutations are audited, branch-local, and rollbackable
+  via `/tree`.
+- **`crossModel`** — enable cross-model shared pool (off by default). When
+  enabled, models can opt-in to share items with `ownerModel="shared"`.
 
 ## How it works
 
 1. `/refine` gathers recent trajectory evidence from the current session branch.
-2. A **proposer** decides what to do. The default (`steering`) sends a steering
-   user message asking the agent to propose evidence-backed CRUD deltas via
-   `harness_mutate`; rule-based proposers (e.g. `dedupe`) return deltas the
-   harness applies directly. See [Proposers](#proposers).
-3. The agent calls the tools (steering path); each accepted delta updates the
-   in-memory state, which is snapshotted to the session via
-   `appendEntry("harness-state", ...)`. Direct-apply proposers snapshot the
-   same way. New items are stamped with the active model (see
-   [Model binding](#model-binding-per-model-isolation)).
+2. A **proposer** decides what to do. The default (`signal`) is a cheap rule-based
+   gate that detects high-signal turns (tool errors, user corrections, task
+   boundaries, explicit refine requests). When signals fire, it applies a signal
+   note directly; alternatively, `steering` delegates to the agent via a steering
+   message, and `dedupe` drops near-duplicate items. See [Proposers](#proposers).
+3. The agent calls the tools (steering path) or deltas are applied directly;
+   each mutation updates the in-memory state, snapshotted to the session via
+   `appendEntry("harness-state", ...)`. New items are stamped with the active
+   model (see [Model binding](#model-binding-per-model-isolation)).
+   **When `subagent` or `skill` items are created/updated, they are automatically
+   executed via the registered orchestrator**, closing the spec→execution→evidence loop.
 4. Because pi's session tree branches at any entry, `/tree` navigation gives
    rollback to any pre-refinement point for free — no bespoke snapshot system.
 
 This reuses the existing agent loop (no nested/hidden model calls), is
 model-agnostic, and keeps every delta visible and reviewable in the transcript.
+
+## Live sub-agent orchestration (A4)
+
+`subagent` and `skill` items in the harness are not just static specs — they can
+be **executed live**, closing the loop from self-improved knowledge to action
+to outcome evidence.
+
+### Sub-agent specs (`kind: "subagent"`)
+
+Create a `subagent` item with a spec in one of these formats:
+
+**YAML front-matter:**
+```yaml
+---
+agent: "coder"
+task: "Refactor the authentication module to use dependency injection"
+async: true
+limits:
+  maxTurns: 20
+  maxTokens: 10000
+---
+```
+
+**JSON:**
+```json
+{
+  "agent": "coder",
+  "task": "Refactor the authentication module to use dependency injection",
+  "async": true,
+  "limits": { "maxTurns": 20, "maxTokens": 10000 }
+}
+```
+
+**Plain text:** first line = agent name, rest = task.
+
+When the item is created/updated via `harness_mutate`, the spec is parsed and
+executed via the registered orchestrator (default: **pi-subagents** via steering
+message to the `subagent` tool). Execution result is tracked and available in
+the tool response.
+
+### Executable skills (`kind: "skill"`)
+
+Create a `skill` item with executable code in YAML front-matter:
+
+```yaml
+---
+language: typescript
+entryPoint: main
+---
+export async function main(args: { input: string }): Promise<{ output: string }> {
+  return { output: args.input.toUpperCase() };
+}
+```
+
+Supported languages: `typescript`/`ts`, `javascript`/`js`, `python`/`py`,
+`shell`/`bash`/`sh`. Executed in a sandboxed temp directory with `tsx`/`node`/
+`python3`/`bash`.
+
+### Orchestrator backends
+
+The orchestration layer is pluggable via `registerOrchestrator()`:
+
+| Orchestrator | Description |
+|---|---|
+| `pi-subagents` (default) | Uses pi-subagents' `subagent` tool via steering message. Requires pi-subagents extension. |
+| Custom | Implement `SubagentOrchestrator` interface and register. |
+
+**Candidates for custom orchestrators:**
+- **pi-boss + pi-room** (tmux-based, auto-register to room for peek/steer)
+- **pi-dispatch** (deterministic fan-out/join/race as code)
+- **pi-subagents** (async, resource-bounded, FleetView observability)
+
+Glue code to wire harness `subagent` items to these backends is the responsibility
+of the framework built on top of this package.
 
 ## Model binding (per-model isolation)
 
@@ -260,7 +373,8 @@ deltas directly). The propose stage is pluggable via a registry
 
 | Name | What it does |
 |---|---|
-| `steering` (default) | Delegates reasoning to the agent via a steering message — reuses the agent loop, model-agnostic, fully visible. |
+| `signal` (default) | **Cheap gate**: detects HIGH-SIGNAL turns (tool errors, user corrections "sebenarnya/salah/bukan/kurang/harusnya", explicit refine requests "refine/perbaiki/catat", task boundaries). When signals fire, applies a signal note directly. No model call. |
+| `steering` | Delegates reasoning to the agent via a steering message — reuses the agent loop, model-agnostic, fully visible. |
 | `dedupe` | Rule-based: drops near-duplicate active items (token-overlap ≥ 0.6), keeping the higher-importance one. No model call. |
 
 Select a proposer per run with `/refine --proposer <name>`, or set the default
@@ -303,10 +417,11 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 ## Scope and non-goals
 
 - **In scope:** unified state store, online `/refine`, structured deltas,
-  prompt injection, branching rollback, durable markdown export.
+  prompt injection, branching rollback, durable markdown export, live sub-agent
+  orchestration, closed-loop outcome evaluation.
 - **Out of scope (compose instead):** durable storage engines (pi-mem), offline
-  deep refinement of behavioral files (pi-reflect), live sub-agent
-  orchestration (pi-boss / pi-room). Sub-agent *specs* are stored as data only.
+  deep refinement of behavioral files (pi-reflect), orchestrator backends
+  (pi-boss / pi-room / pi-dispatch / pi-subagents — pick one and wire it).
 
 ## Status
 
@@ -319,20 +434,23 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   <id>`.
 - **pi-mem composition**: `/harness push-mem [--all|--kind|--model]` steers the agent
   to persist active items into pi-mem (soft-fail; no dependency).
-- Optional config (`~/.pi/agent/harness.json`): project-local durable scope, an
-  opt-in `turn_end` reminder, opt-in `turn_end` auto-refine, and an opt-in
-  `turn_end` outcome-importance loop — the package's two opt-in autonomous
-  paths (both off by default).
-- **Pluggable delta proposers** with a registry: `steering` (default) and
-  `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
+- Optional config (`~/.pi/agent/harness.json`): project-local durable scope,
+  remind, **auto-refine (on by default, every turn with signal gate)**,
+  citation-based outcome promotion, **closed-loop outcome evaluation (opt-in)**,
+  cross-model sharing.
+- **Pluggable delta proposers** with a registry: `signal` (default gate),
+  `steering`, `dedupe` shipped; `registerProposer()` for custom ones.
 - **Per-model isolation**: every item is bound to a `provider/id` and injected
   only for that model; new items are stamped automatically and orphans adopted
   on first contact. A new model id starts from a blank harness, and the durable
   round-trip preserves the owner tag.
 - **Bounded injection (on by default)**: the supplemental block is
-  importance-ordered and capped per kind + by a total token budget, so a growing
-  harness never balloons the system prompt. Tunable / opt-out via the `injection`
-  config key; the store is never changed by selection.
+  importance-ordered and capped per kind + by a total token budget.
+- **Incremental evidence cursor (A1)**: only processes new trajectory since last refine.
+- **Signal gate (A2)**: cheap rule-based proposer detects high-signal turns before escalating.
+- **Default-on autonomy (A3)**: auto-refine runs every turn, but only escalates when signals detected.
+- **Live sub-agent orchestration (A4)**: `subagent`/`skill` items auto-executed on create/update.
+- **Closed-loop outcome evaluation (B3)**: automatic promote/demote based on tool errors and user corrections.
 
 Open extension points (see `docs/ROADMAP.md`):
 
@@ -344,6 +462,8 @@ Open extension points (see `docs/ROADMAP.md`):
   is high-false-positive, so it is served by `/harness drop`, `prune --decay`,
   and the `dedupe` proposer — a fuzzy `corrections` proposer is the natural
   future extension).
+- Domain action surface (B1) — separate extension for primitive actions.
+- Cross-model knowledge transfer policy (B2) — isolate vs. shared pool.
 
 ## License
 

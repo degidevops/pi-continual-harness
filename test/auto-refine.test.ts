@@ -34,10 +34,10 @@ describe("evaluateAutoRefine", () => {
     expect(evaluateAutoRefine(zero, 10000)).toBe(false);
   });
 
-  it("falls back to the default cadence (100) when everyTurns is absent", () => {
+  it("falls back to the default cadence (1) when everyTurns is absent", () => {
     const noEvery = cfg({ autoRefine: { enabled: true } });
-    expect(evaluateAutoRefine(noEvery, 0)).toBe(false); // seed
-    expect(evaluateAutoRefine(noEvery, 99)).toBe(false);
-    expect(evaluateAutoRefine(noEvery, 100)).toBe(true); // default 100
+    expect(evaluateAutoRefine(noEvery, 0)).toBe(false); // seed baseline at turn 0
+    expect(evaluateAutoRefine(noEvery, 1)).toBe(true); // fires on turn 1 (everyTurns=1)
+    expect(evaluateAutoRefine(noEvery, 2)).toBe(true); // fires every turn
   });
 });

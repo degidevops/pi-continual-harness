@@ -1,0 +1,23 @@
+{
+  "name": "pi-continual-harness-domain-actions",
+  "version": "0.1.0",
+  "description": "Domain-specific primitive actions for pi-continual-harness (example: web research, code analysis, file operations)",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.ts",
+  "files": ["index.ts", "src/**/*.ts"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-ai": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-ai": ">=0.74.0",
+    "typebox": ">=1.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

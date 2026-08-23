@@ -5,10 +5,11 @@
 // Deltas — not prose rewrites — are the unit of self-improvement (ACE).
 // Each create requires `evidence`, so the model must ground every addition.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { applyDeltas, getActiveModelKey, getState, listItems } from "./store.js";
+import { applyDeltas, getActiveModelKey, getState, listItems, trackAppliedDeltas } from "./store.js";
+import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec, registerDefaultOrchestrator } from "./orchestration.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 
 const KIND_VALUES = ["prompt", "memory", "skill", "subagent"] as const;
@@ -44,6 +45,8 @@ const DeleteShape = Type.Object({
 const DeltaShape = Type.Union([CreateShape, UpdateShape, DeleteShape]);
 
 export function registerTools(pi: ExtensionAPI): void {
+  // Register default orchestrator (pi-subagents) on load
+  registerDefaultOrchestrator(pi);
   pi.registerTool({
     name: "harness_list",
     label: "List harness state",
@@ -107,12 +110,8 @@ export function registerTools(pi: ExtensionAPI): void {
     parameters: Type.Object({
       deltas: Type.Array(DeltaShape, { minItems: 1, maxItems: 20 }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const incoming = params.deltas as Delta[];
-      // The active model is the ACTOR: creates bind to it, and update/delete are
-      // scoped to it (per-model isolation). When the active model is unknown (no
-      // turn started) there is no actor — creates become orphans, adopted next
-      // turn, and update/delete are unscoped (graceful fallback).
       const applied: AppliedDelta[] = applyDeltas(
         incoming,
         (snapshot, ver) => {
@@ -120,10 +119,48 @@ export function registerTools(pi: ExtensionAPI): void {
         },
         getActiveModelKey(),
       );
+
+      // Track applied delta IDs for automatic outcome evaluation (B3)
+      const appliedDeltaIds = applied
+        .filter((a) => a.op === "create" || a.op === "update")
+        .map((a) => (a.op === "create" ? a.item : a.after)?.deltaId)
+        .filter((id): id is string => Boolean(id));
+      if (appliedDeltaIds.length > 0) {
+        trackAppliedDeltas(appliedDeltaIds);
+      }
+
+      const orchestrationResults: Array<{ itemId: string; kind: ComponentKind; result: unknown }> = [];
+      for (const delta of applied) {
+        if (delta.op === "create" || delta.op === "update") {
+          const item = delta.op === "create" ? delta.item : delta.after;
+          if (!item) continue;
+          if (item.kind === "subagent" && item.active) {
+            try {
+              const spec = parseSubagentSpec(item);
+              if (spec) {
+                const result = await executeSubagentSpec(ctx, spec);
+                orchestrationResults.push({ itemId: item.id, kind: "subagent", result });
+              }
+            } catch (err) {
+              orchestrationResults.push({ itemId: item.id, kind: "subagent", result: { error: (err as Error).message } });
+            }
+          } else if (item.kind === "skill" && item.active) {
+            try {
+              const result = await maybeExecuteSkill(ctx, item);
+              if (result) {
+                orchestrationResults.push({ itemId: item.id, kind: "skill", result });
+              }
+            } catch (err) {
+              orchestrationResults.push({ itemId: item.id, kind: "skill", result: { error: (err as Error).message } });
+            }
+          }
+        }
+      }
+
       const summary = summarize(applied);
       return {
         content: [{ type: "text", text: summary }],
-        details: { applied, version: getState().items.length },
+        details: { applied, version: getState().items.length, orchestration: orchestrationResults },
       };
     },
   });

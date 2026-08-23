@@ -17,7 +17,7 @@ import { DEFAULT_DURABLE_PATH } from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
-export const DEFAULT_AUTO_EVERY_TURNS = 100;
+export const DEFAULT_AUTO_EVERY_TURNS = 1; // every turn when enabled
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
 
@@ -32,13 +32,31 @@ export interface HarnessConfig {
     everyTurns?: number;
     commit?: boolean;
   };
-  /** Delta proposer name (see proposer.ts registry). Defaults to "steering". */
+  /** Delta proposer name (see proposer.ts registry). Defaults to "signal" (gate proposer). */
   proposer?: string;
   /** Opt-in turn_end outcome loop: promote importance of items the agent
    *  references by their [h_xxxx] tag. Off by default (autonomous mutation). */
   outcomeImportance?: {
     enabled?: boolean;
     bump?: number;
+  };
+  /** Opt-in closed-loop outcome evaluation (B3): automatically correlate
+   *  applied deltas with task outcomes (success/failure) and promote/demote.
+   *  Off by default (autonomous mutation). */
+  outcomeEvaluation?: {
+    enabled?: boolean;
+    /** Promote on success (bump importance). */
+    promoteBump?: number;
+    /** Demote on failure (reduce importance). */
+    demotePenalty?: number;
+    /** Min applications before demotion consideration. */
+    minApplications?: number;
+    /** Failure ratio threshold for demotion. */
+    failureRatioThreshold?: number;
+  };
+  /** Cross-model sharing (Phase 3 / B2). */
+  crossModel?: {
+    enabled?: boolean;
   };
   /** Injection selection policy (on by default). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/select.ts. */
@@ -48,9 +66,17 @@ export interface HarnessConfig {
 export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
-  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
-  proposer: "steering",
+  autoRefine: { enabled: true, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
+  proposer: "signal",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
+  outcomeEvaluation: {
+    enabled: false,
+    promoteBump: 0.02,
+    demotePenalty: 0.05,
+    minApplications: 3,
+    failureRatioThreshold: 0.5,
+  },
+  crossModel: { enabled: false },
   // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
   // for small stores; protective as the harness accumulates. Opt out with
   // `injection.enabled: false`. See src/select.ts.
@@ -63,21 +89,39 @@ let cached: HarnessConfig | undefined;
 
 /** Merge a (possibly partial) parsed file over the defaults. */
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
+  const base = DEFAULT_CONFIG;
+  // Non-null assertions on base config since DEFAULT_CONFIG is fully populated
+  const r = base.remindRefine!;
+  const a = base.autoRefine!;
+  const o = base.outcomeImportance!;
+  const e = base.outcomeEvaluation!;
+  const c = base.crossModel!;
+  
   return {
     durableScope: over.durableScope === "project" ? "project" : "global",
     remindRefine: {
-      enabled: over.remindRefine?.enabled ?? false,
-      everyTurns: over.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS,
+      enabled: (over.remindRefine?.enabled ?? r.enabled) as boolean,
+      everyTurns: (over.remindRefine?.everyTurns ?? r.everyTurns) as number,
     },
     autoRefine: {
-      enabled: over.autoRefine?.enabled ?? false,
-      everyTurns: over.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS,
-      commit: over.autoRefine?.commit ?? false,
+      enabled: (over.autoRefine?.enabled ?? a.enabled) as boolean,
+      everyTurns: (over.autoRefine?.everyTurns ?? a.everyTurns) as number,
+      commit: (over.autoRefine?.commit ?? a.commit) as boolean,
     },
-    proposer: over.proposer ?? "steering",
+    proposer: (over.proposer ?? base.proposer!) as string,
     outcomeImportance: {
-      enabled: over.outcomeImportance?.enabled ?? false,
+      enabled: (over.outcomeImportance?.enabled ?? o.enabled) as boolean,
       bump: coerceBump(over.outcomeImportance?.bump),
+    },
+    outcomeEvaluation: {
+      enabled: (over.outcomeEvaluation?.enabled ?? e.enabled) as boolean,
+      promoteBump: (over.outcomeEvaluation?.promoteBump ?? e.promoteBump) as number,
+      demotePenalty: (over.outcomeEvaluation?.demotePenalty ?? e.demotePenalty) as number,
+      minApplications: (over.outcomeEvaluation?.minApplications ?? e.minApplications) as number,
+      failureRatioThreshold: (over.outcomeEvaluation?.failureRatioThreshold ?? e.failureRatioThreshold) as number,
+    },
+    crossModel: {
+      enabled: (over.crossModel?.enabled ?? c.enabled) as boolean,
     },
     // normalizeInjection is defensive (bad types → defaults), so a partial or
     // malformed `injection` object degrades to the shipped defaults rather than

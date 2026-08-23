@@ -6,6 +6,7 @@ import {
   getProposer,
   listProposers,
   registerProposer,
+  signalProposer,
   steeringProposer,
   tokenOverlap,
   tokenize,
@@ -109,7 +110,7 @@ describe("registry", () => {
   });
 
   it("lists the built-in proposers", () => {
-    expect(listProposers().sort()).toEqual(["dedupe", "steering"]);
+    expect(listProposers().sort()).toEqual(["dedupe", "signal", "steering"]);
   });
 
   it("registerProposer adds/replaces a named proposer", async () => {
@@ -117,6 +118,71 @@ describe("registry", () => {
     registerProposer(custom);
     expect(getProposer("noop")).toBe(custom);
     expect(listProposers()).toContain("noop");
+  });
+});
+
+describe("signalProposer (gate proposer)", () => {
+  it("returns no-op for clean trajectory (no signals)", async () => {
+    const evidence = `[user] hello
+[assistant] hi there
+[user] how are you
+[assistant] doing well`;
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.deltas ?? []).toHaveLength(0);
+  });
+
+  it("fires on tool error signal", async () => {
+    const evidence = `[user] do something
+[assistant] calling tool
+[tool] error: something failed
+[assistant] tool error occurred`;
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.deltas).toHaveLength(1);
+    expect(r.deltas![0]!.rationale).toContain("tool_error");
+  });
+
+  it("fires on user correction (Indonesian patterns)", async () => {
+    const evidence = `[user] sebenarnya cara itu salah
+[assistant] oh i see
+[user] harusnya pakai yang lain`;
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.deltas).toHaveLength(1);
+    expect(r.deltas![0]!.rationale).toContain("user_correction");
+  });
+
+  it("fires on explicit refine trigger", async () => {
+    const evidence = `[user] refine the harness please
+[assistant] sure`;
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.deltas).toHaveLength(1);
+    expect(r.deltas![0]!.rationale).toContain("refine_trigger");
+  });
+
+  it("fires on task boundary (sparse trajectory)", async () => {
+    // Very few entries for a large lookback = likely task boundary
+    // Need at least 2 user messages to pass the userLines.length > 1 check
+    const evidence = `[user] new task starts here
+[assistant] ok
+[user] continuing the task
+[assistant] sure`;
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 25 });
+    expect(r.deltas).toHaveLength(1);
+    expect(r.deltas![0]!.rationale).toContain("task_boundary");
+  });
+
+  it("returns delta with correct structure", async () => {
+    const evidence = `[user] sebenarnya itu salah
+[assistant] understood`;
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.deltas).toHaveLength(1);
+    const delta = r.deltas![0]!.delta;
+    expect(delta.op).toBe("create");
+    if (delta.op === "create") {
+      expect(delta.kind).toBe("prompt");
+      expect(delta.importance).toBe(0.6);
+      expect(delta.content).toContain("Signal detected:");
+      expect(delta.evidence).toContain("Auto-detected signals:");
+    }
   });
 });
 

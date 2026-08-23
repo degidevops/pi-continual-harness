@@ -407,21 +407,25 @@ describe("runRefine + auto-refine", () => {
     expect((audits[1]!.data as { source: string }).source).toBe("auto");
   });
 
-  it("turn_end triggers auto-refine only when enabled and the cadence elapses", async () => {
+  it("turn_end triggers auto-refine only when enabled, cadence elapses, AND gate detects signals", async () => {
     resetAutoRefine();
     resetConfigCache();
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-auto-"));
     const cfgFile = join(dir, "harness.json");
-    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    // Use steering proposer so we can check for steering message in sentMessages
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering" }));
     await loadConfig(cfgFile); // populate the in-process config cache (deterministic)
     try {
+      // Branch with a tool error signal (triggers gate) - included as tool message
       const branch = [
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "run test" }] } },
+        { type: "message", message: { role: "assistant", content: [{ type: "text", text: "running test" }] } },
+        { type: "message", message: { role: "tool", content: [{ type: "text", text: "bash: command failed (isError: true)" }] } },
       ];
       const { pi, handlers, ctx, sentMessages, entries } = makeFakePi(branch);
       continualHarness(pi); // turn_end on the fake = auto-refine (last registered)
 
-      // turn 0 seeds the baseline (no fire); turn 1 fires (everyTurns=1)
+      // turn 0 seeds the baseline (no fire); turn 1 fires (everyTurns=1) because gate detects tool error
       await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx());
       expect(sentMessages).toHaveLength(0);
       await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx());
@@ -465,16 +469,20 @@ describe("runRefine + auto-refine", () => {
     resetOutcome();
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-reset-"));
     const cfgFile = join(dir, "harness.json");
-    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    // Use steering proposer so we can check for steering message in sentMessages
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering" }));
     await loadConfig(cfgFile);
     try {
+      // Branch with tool error signal (triggers gate) - included as tool message
       const { pi, handlers, ctx, sentMessages } = makeFakePi([
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "run test" }] } },
+        { type: "message", message: { role: "assistant", content: [{ type: "text", text: "running test" }] } },
+        { type: "message", message: { role: "tool", content: [{ type: "text", text: "bash: command failed (isError: true)" }] } },
       ]);
       continualHarness(pi);
 
       await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx()); // seed
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx()); // fire #1
+      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx()); // fire #1 (gate detects tool error)
       const afterFirst = sentMessages.length;
       expect(afterFirst).toBeGreaterThanOrEqual(1);
 

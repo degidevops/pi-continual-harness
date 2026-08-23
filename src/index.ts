@@ -9,7 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerHarness } from "./harness.js";
 import { registerInjection } from "./inject.js";
-import { registerRefine } from "./refine.js";
+import { registerRefine, resetRefineCursor } from "./refine.js";
 import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
 import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
@@ -26,6 +26,7 @@ export default function continualHarness(pi: ExtensionAPI): void {
     resetAutoRefine();
     resetReminder();
     resetOutcome();
+    resetRefineCursor();
     // Drop any stale active-model key from the previous session: the next
     // before_agent_start re-caches it before any tool can run.
     setActiveModelKey(undefined);
@@ -59,6 +60,21 @@ export {
   type HarnessItem,
   type HarnessState,
 } from "./types.js";
+
+// Sub-agent orchestration (Phase 2 / A4)
+export {
+  executeSubagentSpec,
+  maybeExecuteSkill,
+  parseSubagentSpec,
+  registerOrchestrator,
+  getOrchestrator,
+  listOrchestrators,
+  registerDefaultOrchestrator,
+  type SubagentOrchestrator,
+  type SubagentSpec,
+  type SubagentExecutionResult,
+  type SkillExecutionResult,
+} from "./orchestration.js";
 
 // Public extension API: other extensions can register their own delta proposer
 // (see src/proposer.ts) and it becomes selectable via /refine --proposer <name>

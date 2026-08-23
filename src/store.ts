@@ -13,7 +13,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState } from "./types.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState, OwnerModel } from "./types.js";
 
 const STATE_ENTRY = "harness-state";
 const REFINE_ENTRY = "harness-refinement";
@@ -22,10 +23,26 @@ export const DEFAULT_DURABLE_PATH = join(homedir(), ".pi", "agent", "harness-sta
 
 const IMPORTANCE_FLOOR = 0.3;
 
+// Default outcome tracking config (for manual /harness outcome)
+const DEFAULT_OUTCOME_TRACKING = {
+  minApplications: 3,
+  failureRatioThreshold: 0.5,
+  demotionPenalty: 0.15,
+};
+
+// Default outcome evaluation config (for automatic B3 closed-loop)
+const DEFAULT_OUTCOME_EVALUATION = {
+  enabled: false,
+  promoteBump: 0.02,
+  demotePenalty: 0.05,
+  minApplications: 3,
+  failureRatioThreshold: 0.5,
+};
+
 // Module-scoped state. Rebuilt on every session_start, so it tracks the active
 // branch. Mutations are synchronous, so concurrent tool calls cannot interleave
 // inside a single mutation.
-let state: HarnessState = { items: [] };
+let state: HarnessState = { items: [], crossModel: undefined, outcomeTracking: undefined, outcomeEvaluation: undefined, lastReviewedTurn: -1, lastReviewedIndex: -1 };
 let version = 0;
 
 // ---- model binding -------------------------------------------------------
@@ -62,7 +79,7 @@ export function getState(): HarnessState {
  *  handing state to untrusted/external code (e.g. a DeltaProposer) so it cannot
  *  mutate the live store outside applyDeltas. */
 export function snapshotState(): HarnessState {
-  return { items: state.items.map((i) => ({ ...i })) };
+  return { items: state.items.map((i) => ({ ...i })), crossModel: state.crossModel, outcomeTracking: state.outcomeTracking, outcomeEvaluation: state.outcomeEvaluation };
 }
 
 export function listItems(kind?: ComponentKind): HarnessItem[] {
@@ -77,12 +94,17 @@ function clamp(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
+function genDeltaId(): string {
+  return `d_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
 /** Apply a single delta against the in-memory state. Does not persist.
  *  `actorModel`, when set, stamps creates and restricts update/delete to that
  *  model's items (per-model isolation at the model-facing tool boundary). */
 function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
   if (delta.op === "create") {
     const now = Date.now();
+    const deltaId = delta.deltaId ?? genDeltaId();
     const item: HarnessItem = {
       id: genId(),
       kind: delta.kind,
@@ -92,9 +114,12 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       active: true,
       // Owner: explicit delta wins; else the actor model; else orphan (""),
       // adopted by the active model on first contact.
-      ownerModel: delta.ownerModel ?? actorModel ?? "",
+      ownerModel: (delta.ownerModel ?? actorModel ?? "") as OwnerModel,
       createdAt: now,
       updatedAt: now,
+      deltaId,
+      applications: 0,
+      failures: 0,
     };
     state.items.push(item);
     return { op: "create", item };
@@ -114,7 +139,7 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       evidence: delta.evidence ?? before.evidence,
       importance: clamp(delta.importance ?? before.importance),
       active: delta.active ?? before.active,
-      ownerModel: delta.ownerModel ?? before.ownerModel,
+      ownerModel: (delta.ownerModel ?? before.ownerModel) as OwnerModel,
       updatedAt: Date.now(),
     };
     state.items[idx] = after;
@@ -139,6 +164,8 @@ function assertOwnsItem(
   actorModel?: string,
 ): void {
   if (actorModel === undefined) return;
+  // Shared items can be modified by any opted-in model (handled at config level)
+  if (item.ownerModel === "shared") return;
   if (item.ownerModel !== actorModel) {
     throw new Error(
       `${op}: item ${id} is owned by ${item.ownerModel || "(orphan)"}, not the active model ${actorModel}`,
@@ -155,7 +182,7 @@ export function applyDeltas(
   persist: (snapshot: HarnessState, version: number) => void,
   actorModel?: string,
 ): AppliedDelta[] {
-  const snapshotBefore = { items: state.items.map((i) => ({ ...i })) };
+  const snapshotBefore = { items: state.items.map((i) => ({ ...i })), crossModel: state.crossModel, outcomeTracking: state.outcomeTracking, outcomeEvaluation: state.outcomeEvaluation };
   const applied: AppliedDelta[] = [];
   try {
     for (const d of deltas) applied.push(applyOne(d, actorModel));
@@ -180,9 +207,22 @@ export function reconstruct(entries: Iterable<unknown>): void {
   }
   // Normalize legacy snapshots that predate ownerModel: missing → orphan (""),
   // adopted by the active model on first contact (see adoptOrphans).
+  // Also normalize missing outcome fields and cursor fields.
   state = last
-    ? { items: last.items.map((i) => ({ ...i, ownerModel: i.ownerModel ?? "" })) }
-    : { items: [] };
+    ? {
+        items: last.items.map((i) => ({
+          ...i,
+          ownerModel: i.ownerModel ?? "",
+          applications: i.applications ?? 0,
+          failures: i.failures ?? 0,
+        })),
+        crossModel: last.crossModel ?? { enabled: false, optedInModels: [] },
+        outcomeTracking: last.outcomeTracking ?? { ...DEFAULT_OUTCOME_TRACKING },
+        outcomeEvaluation: last.outcomeEvaluation ?? { ...DEFAULT_OUTCOME_EVALUATION },
+        lastReviewedTurn: last.lastReviewedTurn ?? -1,
+        lastReviewedIndex: last.lastReviewedIndex ?? -1,
+      }
+    : { items: [], crossModel: { enabled: false, optedInModels: [] }, outcomeTracking: { ...DEFAULT_OUTCOME_TRACKING }, outcomeEvaluation: { ...DEFAULT_OUTCOME_EVALUATION }, lastReviewedTurn: -1, lastReviewedIndex: -1 };
   version = 0;
 }
 
@@ -253,6 +293,260 @@ export function adoptOrphans(
   return adopted;
 }
 
+// ---- Cross-model sharing (Phase 3 / B2) ----------------------------------
+
+/** Enable/disable cross-model shared pool. */
+export function setCrossModelEnabled(
+  enabled: boolean,
+  persist: (snapshot: HarnessState, version: number) => void,
+): void {
+  if (!state.crossModel) state.crossModel = { enabled: false, optedInModels: [] };
+  if (state.crossModel.enabled === enabled) return;
+  state.crossModel.enabled = enabled;
+  version += 1;
+  persist(state, version);
+}
+
+/** Opt a model into the shared pool. */
+export function optIntoSharedPool(
+  modelKey: string,
+  persist: (snapshot: HarnessState, version: number) => void,
+): void {
+  if (!state.crossModel) state.crossModel = { enabled: true, optedInModels: [] };
+  if (!state.crossModel.optedInModels.includes(modelKey)) {
+    state.crossModel.optedInModels.push(modelKey);
+    version += 1;
+    persist(state, version);
+  }
+}
+
+/** Opt a model out of the shared pool. */
+export function optOutOfSharedPool(
+  modelKey: string,
+  persist: (snapshot: HarnessState, version: number) => void,
+): void {
+  if (!state.crossModel) return;
+  const idx = state.crossModel.optedInModels.indexOf(modelKey);
+  if (idx >= 0) {
+    state.crossModel.optedInModels.splice(idx, 1);
+    version += 1;
+    persist(state, version);
+  }
+}
+
+/** Promote an item to the shared pool (ownerModel = "shared"). */
+export function promoteToShared(
+  id: string,
+  persist: (snapshot: HarnessState, version: number) => void,
+): HarnessItem | undefined {
+  const item = state.items.find((i) => i.id === id);
+  if (!item) return undefined;
+  if (item.ownerModel === "shared") return item;
+  item.ownerModel = "shared";
+  item.updatedAt = Date.now();
+  version += 1;
+  persist(state, version);
+  return item;
+}
+
+/** Demote an item from shared pool to a specific model (or orphan). */
+export function demoteFromShared(
+  id: string,
+  targetModel: string,
+  persist: (snapshot: HarnessState, version: number) => void,
+): HarnessItem | undefined {
+  const item = state.items.find((i) => i.id === id);
+  if (!item || item.ownerModel !== "shared") return undefined;
+  item.ownerModel = targetModel;
+  item.updatedAt = Date.now();
+  version += 1;
+  persist(state, version);
+  return item;
+}
+
+// ---- Outcome tracking (Phase 3 / B3) -------------------------------------
+
+/** Record an outcome event for a delta application. */
+export function recordOutcome(
+  event: { deltaId: string; success: boolean; turnIndex: number; error?: string },
+  persist: (snapshot: HarnessState, version: number) => void,
+): void {
+  const item = state.items.find((i) => i.deltaId === event.deltaId);
+  if (!item) return; // Item may have been deleted
+
+  if (event.success) {
+    item.applications = (item.applications ?? 0) + 1;
+  } else {
+    item.failures = (item.failures ?? 0) + 1;
+  }
+  item.lastOutcomeAt = Date.now();
+
+  // Auto-demotion check
+  checkAutoDemotion(item, persist);
+}
+
+/** Check if an item should be auto-demoted based on failure ratio. */
+function checkAutoDemotion(item: HarnessItem, persist: (snapshot: HarnessState, version: number) => void): void {
+  const config = state.outcomeTracking ?? DEFAULT_OUTCOME_TRACKING;
+  const apps = item.applications ?? 0;
+  const fails = item.failures ?? 0;
+
+  if (apps < config.minApplications) return;
+  const ratio = fails / apps;
+  if (ratio >= config.failureRatioThreshold) {
+    // Demote: reduce importance and mark for review
+    item.importance = clamp(item.importance - config.demotionPenalty);
+    item.updatedAt = Date.now();
+    version += 1;
+    persist(state, version);
+  }
+}
+
+/** Get items eligible for promotion to shared (high importance, good track record). */
+export function getPromotionCandidates(minImportance = 0.7, minApplications = 5): HarnessItem[] {
+  return state.items.filter(
+    (i) =>
+      i.active &&
+      i.ownerModel !== "shared" &&
+      i.importance >= minImportance &&
+      (i.applications ?? 0) >= minApplications &&
+      (i.failures ?? 0) / Math.max(1, i.applications ?? 1) < 0.3,
+  );
+}
+
+/** Get items that should be demoted/retired (poor track record). */
+export function getDemotionCandidates(): HarnessItem[] {
+  const config = state.outcomeTracking ?? DEFAULT_OUTCOME_TRACKING;
+  return state.items.filter(
+    (i) =>
+      i.active &&
+      (i.applications ?? 0) >= config.minApplications &&
+      (i.failures ?? 0) / Math.max(1, i.applications ?? 1) >= config.failureRatioThreshold,
+  );
+}
+
+// ---- Incremental cursor (A1) ---------------------------------------------
+
+/** Get the last reviewed turn index. */
+export function getLastReviewedTurn(): number {
+  return state.lastReviewedTurn ?? -1;
+}
+
+/** Get the last reviewed entry index. */
+export function getLastReviewedIndex(): number {
+  return state.lastReviewedIndex ?? -1;
+}
+
+/** Set the cursor after processing evidence. */
+export function setReviewCursor(
+  turn: number,
+  index: number,
+  persist: (snapshot: HarnessState, version: number) => void,
+): void {
+  state.lastReviewedTurn = turn;
+  state.lastReviewedIndex = index;
+  version += 1;
+  persist(state, version);
+}
+
+// ---- Automatic outcome evaluation (B3) -----------------------------------
+
+/** Track which deltas were applied in the current turn for outcome correlation. */
+let pendingDeltaIds: string[] = [];
+
+/** Record delta IDs that were applied this turn (called from harness_mutate). */
+export function trackAppliedDeltas(deltaIds: string[]): void {
+  pendingDeltaIds = deltaIds;
+}
+
+/** Clear pending delta IDs after outcome evaluation. */
+export function clearPendingDeltas(): void {
+  pendingDeltaIds = [];
+}
+
+/** Get pending delta IDs for outcome evaluation. */
+export function getPendingDeltas(): string[] {
+  return pendingDeltaIds;
+}
+
+/**
+ * Automatically evaluate outcomes for pending deltas based on turn result.
+ * Called at turn_end when outcomeEvaluation is enabled.
+ * Detects success/failure from tool errors and explicit user corrections.
+ */
+export function evaluatePendingOutcomes(
+  ctx: ExtensionContext,
+  persist: (snapshot: HarnessState, version: number) => void,
+): { promoted: number; demoted: number } {
+  const evalConfig = state.outcomeEvaluation ?? DEFAULT_OUTCOME_EVALUATION;
+  if (!evalConfig.enabled) return { promoted: 0, demoted: 0 };
+  if (pendingDeltaIds.length === 0) return { promoted: 0, demoted: 0 };
+
+  const entries = ctx.sessionManager.getBranch() as any[];
+  
+  // Detect task failure signals in the latest turn
+  let hasFailure = false;
+  let hasExplicitCorrection = false;
+  
+  // Check recent entries for tool errors or user corrections
+  for (const entry of entries.slice(-10).reverse()) {
+    if (entry.type === "custom" && entry.customType === "tool_call" && entry.data?.isError) {
+      hasFailure = true;
+      break;
+    }
+    if (entry.type === "message" && entry.message?.role === "user") {
+      const text = (entry.message.content ?? []).map((c: any) => c.text ?? "").join(" ").toLowerCase();
+      if (/\b(salah|sebenarnya|bukan|kurang|harusnya|betulnya|perbaiki|ulang|retry)\b/.test(text)) {
+        hasExplicitCorrection = true;
+        hasFailure = true;
+        break;
+      }
+    }
+  }
+
+  let promoted = 0;
+  let demoted = 0;
+  
+  for (const deltaId of pendingDeltaIds) {
+    const item = state.items.find((i) => i.deltaId === deltaId);
+    if (!item) continue;
+
+    if (hasFailure) {
+      item.failures = (item.failures ?? 0) + 1;
+      // Apply demotion penalty immediately for failure
+      item.importance = clamp(item.importance - evalConfig.demotePenalty);
+      item.updatedAt = Date.now();
+      demoted++;
+    } else {
+      item.applications = (item.applications ?? 0) + 1;
+      // Apply promotion bump for success
+      item.importance = clamp(item.importance + evalConfig.promoteBump);
+      item.updatedAt = Date.now();
+      promoted++;
+    }
+    item.lastOutcomeAt = Date.now();
+    
+    // Check auto-demotion threshold
+    const apps = item.applications ?? 0;
+    const fails = item.failures ?? 0;
+    if (apps >= evalConfig.minApplications) {
+      const ratio = fails / apps;
+      if (ratio >= evalConfig.failureRatioThreshold) {
+        item.importance = clamp(item.importance - evalConfig.demotePenalty);
+        demoted++;
+      }
+    }
+  }
+  
+  if (promoted > 0 || demoted > 0) {
+    version += 1;
+    persist(state, version);
+  }
+  
+  clearPendingDeltas();
+  return { promoted, demoted };
+}
+
 export { STATE_ENTRY, REFINE_ENTRY, IMPORTANCE_FLOOR };
 
 // ---- Durable export (composition seam with pi-reflect / pi-mem) -------------
@@ -268,6 +562,10 @@ export async function exportDurable(path = DEFAULT_DURABLE_PATH): Promise<string
       lines.push(`- **[${i.id}]** (importance ${i.importance.toFixed(2)}) ${i.content}`);
       lines.push(`  - evidence: ${i.evidence}`);
       if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
+      if (i.deltaId) lines.push(`  - deltaId: ${i.deltaId}`);
+      if ((i.applications ?? 0) > 0 || (i.failures ?? 0) > 0) {
+        lines.push(`  - applications: ${i.applications ?? 0}, failures: ${i.failures ?? 0}`);
+      }
     }
     lines.push("");
   }
@@ -292,19 +590,6 @@ function titleFor(kind: ComponentKind): string {
 }
 
 // ---- Durable import (round-trip seam with pi-reflect) ---------------------
-//
-// exportDurable() is write-only by design. reconstructFromDurable() closes the
-// loop: it parses the markdown back into items and merges them into the live
-// store, so offline edits pi-reflect makes to harness-state.md flow back in.
-//
-// Merge semantics (predictable, loss-free by default):
-//   - parsed item whose id matches an existing item → UPDATE in place
-//     (durable wins on content/evidence/importance; reactivated; createdAt kept).
-//   - parsed item with a new/foreign id → CREATE.
-//   - items in the store but absent from the file → KEPT by default.
-//     Pass { prune: true } to also drop active items whose id is not in the
-//     file (inactive items are always preserved — the durable export never
-//     contains them, so they cannot have been "deleted" by pi-reflect).
 
 export interface DurableImportResult {
   /** Items successfully parsed from the file. */
@@ -324,6 +609,9 @@ interface ParsedItem {
   content: string;
   evidence: string;
   ownerModel?: string;
+  deltaId?: string;
+  applications?: number;
+  failures?: number;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -349,6 +637,8 @@ const RE_ID_BULLET = /^-\s+\*\*\[([^\]]+)\]\*\*\s*\(importance\s+([\d.]+)\)\s*(.
 const RE_PLAIN_BULLET = /^-\s+(.+)$/;
 const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
 const RE_MODEL = /^\s+-\s+model:\s*(.*)$/i;
+const RE_DELTAID = /^\s+-\s+deltaId:\s*(.*)$/i;
+const RE_OUTCOME = /^\s+-\s+applications:\s*(\d+),\s+failures:\s+(\d+)$/i;
 
 /** Parse a durable markdown export into items. Tolerant of pi-reflect's edits. */
 export function parseDurable(text: string): ParsedItem[] {
@@ -383,6 +673,21 @@ export function parseDurable(text: string): ParsedItem[] {
     const mdl = line.match(RE_MODEL);
     if (mdl) {
       if (pending) pending.ownerModel = mdl[1]!.trim();
+      continue;
+    }
+
+    const did = line.match(RE_DELTAID);
+    if (did) {
+      if (pending) pending.deltaId = did[1]!.trim();
+      continue;
+    }
+
+    const oc = line.match(RE_OUTCOME);
+    if (oc) {
+      if (pending) {
+        pending.applications = Number(oc[1]!);
+        pending.failures = Number(oc[2]!);
+      }
       continue;
     }
 
@@ -455,11 +760,14 @@ export async function reconstructFromDurable(
       // (e.g. pi-reflect stripped it) orphans the item so it's adopted by the
       // active model on first contact — matching the documented round-trip.
       existing.ownerModel = p.ownerModel ?? "";
+      if (p.deltaId !== undefined) existing.deltaId = p.deltaId;
+      existing.applications = p.applications ?? existing.applications ?? 0;
+      existing.failures = p.failures ?? existing.failures ?? 0;
       existing.updatedAt = now;
       updated += 1;
     } else {
       const id = p.id && /^h_/.test(p.id) ? p.id : genId();
-      state.items.push({
+      const newItem: HarnessItem = {
         id,
         kind: p.kind,
         content: p.content,
@@ -469,7 +777,11 @@ export async function reconstructFromDurable(
         ownerModel: p.ownerModel ?? "",
         createdAt: now,
         updatedAt: now,
-      });
+        applications: p.applications ?? 0,
+        failures: p.failures ?? 0,
+      };
+      if (p.deltaId) newItem.deltaId = p.deltaId;
+      state.items.push(newItem);
       created += 1;
     }
   }

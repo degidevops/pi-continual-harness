@@ -22,9 +22,9 @@
 // rollback); visible (notify per turn). Pure reference extraction is factored
 // into findReferences() so it is unit-testable without a live pi runtime.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
-import { bumpImportance, getState, modelKey } from "./store.js";
+import { bumpImportance, getState, modelKey, evaluatePendingOutcomes } from "./store.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
 type AnyEntry = {
@@ -65,47 +65,63 @@ export function resetOutcome(): void {
 export function registerOutcome(pi: ExtensionAPI): void {
   pi.on("turn_end", async (_event, ctx) => {
     const config = await loadConfig();
-    if (!config.outcomeImportance?.enabled) return;
-    const bump = config.outcomeImportance.bump ?? DEFAULT_REF_BUMP;
-    if (bump <= 0) return;
+    
+    // --- 1. Citation-based promotion (outcomeImportance) ---
+    if (config.outcomeImportance?.enabled) {
+      const bump = config.outcomeImportance.bump ?? DEFAULT_REF_BUMP;
+      if (bump > 0) {
+        const entries = ctx.sessionManager.getBranch() as AnyEntry[];
+        const asst = entries.filter((e) => e.type === "message" && e.message?.role === "assistant");
+        if (scannedMessages < 0) {
+          scannedMessages = asst.length; // seed: no retroactive bump
+        } else {
+          const fresh = asst.slice(scannedMessages);
+          scannedMessages = asst.length;
 
-    const entries = ctx.sessionManager.getBranch() as AnyEntry[];
-    const asst = entries.filter((e) => e.type === "message" && e.message?.role === "assistant");
-    if (scannedMessages < 0) {
-      scannedMessages = asst.length; // seed: no retroactive bump
-      return;
+          const text = fresh
+            .map((e) => (e.message?.content ?? []).map((c) => c.text ?? "").join(" "))
+            .join("\n");
+          if (text.trim()) {
+            const key = modelKey(ctx.model);
+            const activeIds = new Set(
+              key === undefined
+                ? []
+                : getState().items.filter((i) => i.active && i.ownerModel === key).map((i) => i.id),
+            );
+            const refs = findReferences(text, activeIds);
+            if (refs.length > 0) {
+              let bumped = 0;
+              for (const id of refs) {
+                const item = bumpImportance(id, bump, (snapshot, ver) => {
+                  pi.appendEntry("harness-state", { state: snapshot, version: ver });
+                });
+                if (item) bumped += 1;
+              }
+              if (bumped > 0) {
+                ctx.ui.notify(
+                  `Outcome: +${bump} importance for ${bumped} referenced item(s): ${refs.join(", ")}`,
+                  "info",
+                );
+              }
+            }
+          }
+        }
+      }
     }
-    const fresh = asst.slice(scannedMessages);
-    scannedMessages = asst.length;
-
-    const text = fresh
-      .map((e) => (e.message?.content ?? []).map((c) => c.text ?? "").join(" "))
-      .join("\n");
-    if (!text.trim()) return;
-
-    // Only the active model's items are injected, so only those can be cited.
-    // Filter accordingly; an unknown model → no candidates → no bumps.
-    const key = modelKey(ctx.model);
-    const activeIds = new Set(
-      key === undefined
-        ? []
-        : getState().items.filter((i) => i.active && i.ownerModel === key).map((i) => i.id),
-    );
-    const refs = findReferences(text, activeIds);
-    if (refs.length === 0) return;
-
-    let bumped = 0;
-    for (const id of refs) {
-      const item = bumpImportance(id, bump, (snapshot, ver) => {
+    
+    // --- 2. Closed-loop outcome evaluation (outcomeEvaluation - B3) ---
+    // Automatically correlates applied deltas with task outcomes (success/failure)
+    // and promotes/demotes accordingly.
+    if (config.outcomeEvaluation?.enabled) {
+      const result = evaluatePendingOutcomes(ctx, (snapshot, ver) => {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });
-      if (item) bumped += 1;
-    }
-    if (bumped > 0) {
-      ctx.ui.notify(
-        `Outcome: +${bump} importance for ${bumped} referenced item(s): ${refs.join(", ")}`,
-        "info",
-      );
+      if (result.promoted > 0 || result.demoted > 0) {
+        ctx.ui.notify(
+          `Outcome eval: ${result.promoted} promoted, ${result.demoted} demoted`,
+          result.demoted > 0 ? "warning" : "info",
+        );
+      }
     }
   });
 }
