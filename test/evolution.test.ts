@@ -141,6 +141,31 @@ describe("decay resistance (store.ts)", () => {
   });
 });
 
+describe("fair trials on repair (store.ts)", () => {
+  it("content update resets outcome counters; importance-only update preserves them", () => {
+    reconstruct([]);
+    applyDeltas([{ op: "create", kind: "skill", content: "broken v1", evidence: "e", deltaId: "d_repair" }], () => {});
+    const item = getState().items[0]!;
+    item.applications = 2;
+    item.failures = 5;
+    item.lastOutcomeAt = 123456;
+
+    // Repair: content changes → fresh trial.
+    applyDeltas([{ op: "update", id: item.id, content: "fixed v2" }], () => {});
+    const repaired = getState().items.find((i) => i.id === item.id)!;
+    expect(repaired.applications).toBe(0);
+    expect(repaired.failures).toBe(0);
+    expect(repaired.lastOutcomeAt).toBeUndefined();
+
+    // Cosmetic tuning: importance bump keeps history.
+    repaired.applications = 3;
+    applyDeltas([{ op: "update", id: repaired.id, importance: 0.9 }], () => {});
+    const tuned = getState().items.find((i) => i.id === item.id)!;
+    expect(tuned.applications).toBe(3);
+    expect(tuned.importance).toBe(0.9);
+  });
+});
+
 describe("steering follow-through (refine.ts)", () => {
   it("tracks pending → cleared lifecycle", async () => {
     markSteeringActed();

@@ -134,6 +134,7 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
     // touch that model's items. Cross-model maintenance paths (the dedupe
     // proposer, /harness keep|drop|prune) call applyDeltas with no actor.
     assertOwnsItem("update", delta.id, before, actorModel);
+    const contentChanged = delta.content !== undefined && delta.content !== before.content;
     const after: HarnessItem = {
       ...before,
       content: delta.content ?? before.content,
@@ -143,6 +144,15 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       ownerModel: (delta.ownerModel ?? before.ownerModel) as OwnerModel,
       updatedAt: Date.now(),
     };
+    // Fair trials (Continual Harness §4.6): repaired content has not been
+    // tested yet, so its old outcome record must not condemn it. A content
+    // change archives the counters and starts a fresh trial. Importance/
+    // active/evidence-only updates keep history — the behavior didn't change.
+    if (contentChanged) {
+      after.applications = 0;
+      after.failures = 0;
+      delete (after as { lastOutcomeAt?: number }).lastOutcomeAt;
+    }
     state.items[idx] = after;
     return { op: "update", before, after };
   }

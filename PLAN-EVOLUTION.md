@@ -12,17 +12,17 @@ menjaga dirinya sendiri sehat tanpa intervensi manual.
 
 ## Tier 1 — Perbaiki fondasi loop evolusi
 
-- [ ] **T1.1 Heuristik proses di prompt refine**
+- [x] **T1.1 Heuristik proses di prompt refine**
       File: `src/proposer.ts` (`buildSteeringPrompt`, panduan diagnosis gate).
       Refiner diarahkan eksplisit: utamakan bentuk kondisional
       *"Saat X / Sebelum Y → lakukan Z"* di atas fakta mentah; satu pelajaran =
       satu aturan; sertakan evidence konkret.
-- [ ] **T1.2 Trial baru untuk item yang diperbaiki** *(bug halus)*
+- [x] **T1.2 Trial baru untuk item yang diperbaiki** *(bug halus)*
       File: `src/store.ts` (`applyOne` update branch).
       Update `content` yang benar-benar berubah → reset `applications/failures`
       ke 0 + hapus `lastOutcomeAt` (konten baru belum teruji). Update yang hanya
       menyentuh `importance/active/evidence` TIDAK mereset.
-- [ ] Test: reset terjadi pada perubahan konten; tidak terjadi pada bump importance.
+- [x] Test: reset terjadi pada perubahan konten; tidak terjadi pada bump importance.
 
 ## Tier 2 — Evolusi yang mengarah ke yang benar
 
