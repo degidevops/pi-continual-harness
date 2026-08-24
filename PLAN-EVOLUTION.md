@@ -26,20 +26,20 @@ menjaga dirinya sendiri sehat tanpa intervensi manual.
 
 ## Tier 2 — Evolusi yang mengarah ke yang benar
 
-- [ ] **T2.1 Konsolidasi otomatis berkala (grow-and-refine ala ACE)**
+- [x] **T2.1 Konsolidasi otomatis berkala (grow-and-refine ala ACE)**
       File baru: `src/consolidate.ts`; wiring di `src/outcome.ts` (turn_end part 4)
       + `src/index.ts` (reset cursor) + `src/config.ts`.
       Config: `consolidate: { enabled?: boolean; everyTurns?: number }`,
       default OFF / 25 turn. Tiap kadensi: jalankan dedupe proposer (delete
       near-duplicate) lalu `decayAndPrune`. Ter-audit via harness-state entries,
       notify ringkas hasilnya.
-- [ ] **T2.2 Konteks atribusi di evidence**
+- [x] **T2.2 Konteks atribusi di evidence**
       File: `src/inject.ts` (catat id item yang barusan ter-inject),
       `src/refine.ts` (`gatherEvidence` menambahkan section
       "## Harness items injected during this window").
       Refiner jadi bisa membedakan "gagal KARENA catatan X salah" vs
       "gagal karena X tidak ada" → delta tepat sasaran, bukan tebakan duplikat.
-- [ ] Test: kadensi konsolidasi; konsolidasi mendedupe + prune; evidence
+- [x] Test: kadensi konsolidasi; konsolidasi mendedupe + prune; evidence
       mengandung daftar item ter-inject.
 
 ## Tier 3 — Ditunda (butuh dataoutcome terakumulasi)

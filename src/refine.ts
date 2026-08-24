@@ -19,8 +19,9 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, exportDurable, getFailingItems, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
+import { applyDeltas, exportDurable, getFailingItems, getState, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
 import { skillPromptLine } from "./orchestration.js";
+import { getLastInjectedIds } from "./inject.js";
 import { getProposer } from "./proposer.js";
 import type { CompleteOptions, CompleteResult, ProposeResult, ProposedDelta } from "./proposer.js";
 
@@ -297,7 +298,38 @@ function gatherEvidence(ctx: ExtensionContext, lookback: number, messages: AnyEn
     lines.push(line);
     bytes += line.length;
   }
-  
+
+  // Repair targets (Continual Harness §4.6): net-failing items are ALWAYS
+  // surfaced to the refiner, regardless of the trajectory window — the
+  // evidence for a broken skill lives in its outcome record, not in chat.
+  const failing = getFailingItems();
+  if (failing.length > 0) {
+    lines.push(
+      "",
+      "## Harness items flagged for repair (net-failing execution record)",
+      ...failing.map(
+        (i) =>
+          `- [${i.id}] (${i.kind}, ${i.applications ?? 0} ok / ${i.failures ?? 0} failed) ${skillPromptLine(i).slice(0, 200)}`,
+      ),
+    );
+  }
+
+  // Injection attribution: which notes the model was actually looking at.
+  // Lets the refiner distinguish "failed BECAUSE note X was wrong" (update X)
+  // from "failed because X was missing" (create new).
+  const injected = getLastInjectedIds();
+  if (injected.length > 0) {
+    lines.push("", "## Harness items injected during this window");
+    for (const id of injected) {
+      const item = getState().items.find((i) => i.id === id);
+      lines.push(
+        item
+          ? `- [${item.id}] (${item.kind}, importance ${item.importance.toFixed(2)}) ${item.content.slice(0, 100)}`
+          : `- [${id}] (no longer in store)`,
+      );
+    }
+  }
+
   return lines.join("\n") || "(no new trajectory evidence since last refine)";
 }
 

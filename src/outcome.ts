@@ -26,6 +26,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
 import { bumpImportance, getState, modelKey, evaluatePendingOutcomes } from "./store.js";
 import { reconcileSubagentRuns } from "./subagent-tracking.js";
+import { evaluateConsolidation, runConsolidation } from "./consolidate.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
 type AnyEntry = {
@@ -64,7 +65,7 @@ export function resetOutcome(): void {
 
 /** Subscribe to turn_end and promote importance of referenced items (opt-in). */
 export function registerOutcome(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (_event, ctx) => {
+  pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
     
     // --- 1. Citation-based promotion (outcomeImportance) ---
@@ -137,6 +138,21 @@ export function registerOutcome(pi: ExtensionAPI): void {
         `Subagent outcome: ${runs.successes} succeeded, ${runs.failures} failed (recorded).`,
         runs.failures > 0 ? "warning" : "info",
       );
+    }
+
+    // --- 4. Periodic consolidation (opt-in; ACE grow-and-refine) ---
+    // Dedupe near-duplicates + decay/prune below-floor items on a cadence so
+    // the store stays healthy without manual /harness commands.
+    if (evaluateConsolidation(config, event.turnIndex)) {
+      const res = await runConsolidation((snapshot, ver) => {
+        pi.appendEntry("harness-state", { state: snapshot, version: ver });
+      });
+      if (res.merged > 0 || res.pruned > 0) {
+        ctx.ui.notify(
+          `Consolidated harness: ${res.merged} duplicate(s) removed, ${res.pruned} stale item(s) pruned.`,
+          "info",
+        );
+      }
     }
   });
 }

@@ -22,6 +22,7 @@ import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
 import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
 import { registerOutcome, resetOutcome } from "./outcome.js";
+import { resetConsolidation } from "./consolidate.js";
 import { getState, reconstruct, reconstructFromDurable, setActiveModelKey, STATE_ENTRY } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
 
@@ -35,6 +36,7 @@ export default function continualHarness(pi: ExtensionAPI): void {
     resetAutoRefine();
     resetReminder();
     resetOutcome();
+    resetConsolidation();
     resetRefineCursor();
     // Drop any stale active-model key from the previous session: the next
     // before_agent_start re-caches it before any tool can run.

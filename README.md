@@ -152,6 +152,8 @@ What each switch does in this preset:
   gains survive into the next session.
 - `outcomeImportance` + `outcomeEvaluation` — the fitness loop is fully live:
   cited items gain importance; deltas are promoted/demoted by measured outcomes.
+- `consolidate: everyTurns 25` — store hygiene runs itself: near-duplicates get
+  merged away and stale items pruned on a cadence (opt into your config).
 - `autoImport` — at session start, the durable file merges back in automatically:
   yesterday's refinements are live from turn one (bootstrap-updating > frozen).
 - `orchestration.mode: "yolo"` — model-authored skills/sub-agents execute
@@ -186,6 +188,8 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
     "failureRatioThreshold": 0.5
   },
   "crossModel": { "enabled": false },
+  "autoImport": { "enabled": false },
+  "consolidate": { "enabled": false, "everyTurns": 25 },
   "orchestration": { "enabled": true, "mode": "confirm" }
 }
 ```
@@ -242,6 +246,14 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   via `/tree`.
 - **`crossModel`** — enable cross-model shared pool (off by default). When
   enabled, models can opt-in to share items with `ownerModel="shared"`.
+- **`autoImport`** — auto-import the durable markdown at `session_start`
+  (merge, durable wins, never prunes; best-effort — a missing/corrupt file
+  never blocks the session). Off by default; the full-auto preset turns it on
+  so last session's refinements are live from turn one.
+- **`consolidate`** — opt-in periodic store hygiene (ACE grow-and-refine):
+  every `everyTurns` turns, run the dedupe proposer (remove near-duplicate
+  items) then decay/prune (drop items below the importance floor). Audited and
+  rollbackable like every other mutation. Off by default.
 - **`orchestration`** — sub-agent/skill execution. `enabled` (default: true)
   gates all execution; when false nothing runs, not even manual commands.
   `mode` (default: `"confirm"`) controls auto-execution by `harness_mutate`:

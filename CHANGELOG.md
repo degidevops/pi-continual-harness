@@ -10,6 +10,28 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Evolution v2 — from storing facts to evolving how the model acts
+
+- **Process heuristics in refine prompts**: the steering prompt (and signal-gate
+  escalation) now instructs the refiner to encode lessons as CONDITIONAL
+  DECISION RULES — "When X / Before Y → do Z" — instead of bare facts. Rules
+  are actionable at decision time; the outcome fitness loop then selects rules
+  that actually work.
+- **Fair trials for repaired items**: a `harness_mutate` update that changes an
+  item's content resets its applications/failures counters and clears
+  lastOutcomeAt. A repaired skill starts unprejudiced instead of being condemned
+  by pre-repair failures (paper §4.6). Importance/active-only updates keep
+  history.
+- **Auto-consolidation (ACE grow-and-refine)**: new opt-in config
+  `{ "consolidate": { "enabled": true, "everyTurns": N } }` — every N turns run
+  the dedupe proposer then decay/prune, so the store stays healthy without
+  manual /harness commands. Audited + rollbackable like all mutations.
+- **Injection attribution in refine evidence**: evidence now lists which harness
+  items were injected during the window (recorded at before_agent_start), letting
+  the refiner distinguish "failed BECAUSE note X was wrong" (update X) from
+  "failed because X was missing" (create new). Also restores the previously
+  lost "items flagged for repair" evidence section.
+
 ### Memory / skill / sub-agent systems made real
 
 - **Progressive disclosure for skills**: executable skills render only their

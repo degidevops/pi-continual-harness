@@ -117,6 +117,26 @@ function latestUserText(ctx: { sessionManager?: { getBranch?: () => unknown[] } 
   return undefined;
 }
 
+// ---- injection attribution -----------------------------------------------
+//
+// Records which item ids were rendered into the system prompt on the most
+// recent turn, so the refiner's evidence can distinguish "failed BECAUSE note
+// X was wrong" from "failed because X was missing".
+
+let lastInjectedIds: string[] = [];
+
+/** Record the ids rendered in the latest injection block (called by registerInjection). */
+export function recordInjectedIds(ids: string[]): void {
+  lastInjectedIds = [...ids];
+}
+
+/** Ids injected on the most recent before_agent_start ([] = none yet). */
+export function getLastInjectedIds(): string[] {
+  return [...lastInjectedIds];
+}
+
+const INJECTED_ID_RE = /\[(h_[a-z0-9_]+)\]/g;
+
 export function registerInjection(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     const key = modelKey(ctx.model);
@@ -142,6 +162,9 @@ export function registerInjection(pi: ExtensionAPI): void {
     // the system prompt. Opt out via harness.json `injection.enabled: false`.
     const { injection } = await loadConfig();
     const block = renderHarnessBlock(key, injection, latestUserText(ctx));
+    // Attribution bookkeeping for the refiner (see getLastInjectedIds).
+    const ids = [...block.matchAll(INJECTED_ID_RE)].map((m) => m[1]!);
+    recordInjectedIds(ids);
     if (!block) return;
     return { systemPrompt: event.systemPrompt + "\n" + block };
   });

@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DURABLE_PATH } from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
+import { DEFAULT_CONSOLIDATE_EVERY_TURNS } from "./consolidate.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
 export const DEFAULT_AUTO_EVERY_TURNS = 1; // every turn when enabled
@@ -70,6 +71,13 @@ export interface HarnessConfig {
   autoImport?: {
     enabled?: boolean;
   };
+  /** Periodic store consolidation (ACE grow-and-refine): every `everyTurns`,
+   *  run the dedupe proposer (remove near-duplicates) then decayAndPrune
+   *  (drop items below the importance floor). Default OFF / 25 turns. */
+  consolidate?: {
+    enabled?: boolean;
+    everyTurns?: number;
+  };
   /** Sub-agent/skill orchestration execution.
    *  - enabled=false        → nothing executes (not even manual /harness commands).
    *  - mode="confirm"       → items are stored but NEVER auto-executed by
@@ -112,6 +120,9 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   // Bootstrap seam off by default: importing durable state is an explicit,
   // reviewable action (/harness import) unless you opt in here.
   autoImport: { enabled: false },
+  // Consolidation (dedupe + decay/prune) stays manual (/harness commands)
+  // unless opted in — autonomous store mutation on a cadence.
+  consolidate: { enabled: false, everyTurns: DEFAULT_CONSOLIDATE_EVERY_TURNS },
   // Safe by default: model-authored skills/sub-agents are stored but never
   // executed without an explicit user command (/harness run-skill|run-subagent).
   // Opt into full-auto with { "orchestration": { "mode": "yolo" } }.
@@ -135,7 +146,8 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   const e = base.outcomeEvaluation!;
   const c = base.crossModel!;
   const ai = base.autoImport!;
-  const orc = base.orchestration!;;
+  const co = base.consolidate!;
+  const orc = base.orchestration!;;;
   
   return {
     durableScope: over.durableScope === "project" ? "project" : "global",
@@ -166,6 +178,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     },
     autoImport: {
       enabled: (over.autoImport?.enabled ?? ai.enabled) as boolean,
+    },
+    consolidate: {
+      enabled: (over.consolidate?.enabled ?? co.enabled) as boolean,
+      everyTurns: (over.consolidate?.everyTurns ?? co.everyTurns) as number,
     },
     orchestration: {
       enabled: (over.orchestration?.enabled ?? orc.enabled) as boolean,

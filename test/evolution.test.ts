@@ -29,6 +29,12 @@ import {
   pendingSubagentRuns,
   RUN_TIMEOUT_MS,
 } from "../src/subagent-tracking.js";
+import {
+  evaluateConsolidation,
+  runConsolidation,
+  resetConsolidation,
+} from "../src/consolidate.js";
+import type { HarnessConfig } from "../src/config.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { HarnessItem } from "../src/types.js";
 
@@ -163,6 +169,46 @@ describe("fair trials on repair (store.ts)", () => {
     const tuned = getState().items.find((i) => i.id === item.id)!;
     expect(tuned.applications).toBe(3);
     expect(tuned.importance).toBe(0.9);
+  });
+});
+
+describe("auto-consolidation (consolidate.ts)", () => {
+  beforeEach(() => {
+    resetConsolidation();
+    reconstruct([]);
+  });
+
+  it("cadence: seeds on first observed turn, fires at the configured interval", () => {
+    const cfg = { consolidate: { enabled: true, everyTurns: 2 } } as HarnessConfig;
+    expect(evaluateConsolidation(cfg, 0)).toBe(false); // seed
+    expect(evaluateConsolidation(cfg, 1)).toBe(false);
+    expect(evaluateConsolidation(cfg, 2)).toBe(true); // interval elapsed
+    expect(evaluateConsolidation(cfg, 3)).toBe(false); // baseline moved to 2
+    expect(evaluateConsolidation(cfg, 4)).toBe(true);
+  });
+
+  it("disabled config never fires", () => {
+    const off = { consolidate: { enabled: false, everyTurns: 1 } } as HarnessConfig;
+    expect(evaluateConsolidation(off, 0)).toBe(false);
+    expect(evaluateConsolidation(off, 10)).toBe(false);
+  });
+
+  it("runConsolidation removes near-duplicates and prunes below-floor items", async () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "skill", content: "always run npm test before committing changes", evidence: "e", importance: 0.8 },
+        { op: "create", kind: "skill", content: "always run npm test before committing changes today", evidence: "e", importance: 0.7 },
+        { op: "create", kind: "prompt", content: "zzz unrelated filler note here", evidence: "e", importance: 0.1 },
+      ],
+      () => {},
+    );
+    expect(getState().items).toHaveLength(3);
+
+    const res = await runConsolidation(() => {});
+    expect(res.merged).toBe(1); // one near-duplicate deleted (lower importance)
+    expect(res.pruned).toBe(1); // below-floor junk dropped
+    expect(getState().items).toHaveLength(1);
+    expect(getState().items[0]!.content).toContain("always run npm test");
   });
 });
 

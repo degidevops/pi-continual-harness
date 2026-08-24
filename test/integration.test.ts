@@ -137,6 +137,37 @@ describe("session_start reconstruction", () => {
     expect(notifications).toHaveLength(0);
   });
 
+  it("refine evidence includes injected-item attribution (T2.2)", async () => {
+    reset();
+    // Item bound to the fake ctx's model so injection renders it.
+    applyDeltas([
+      { op: "create", kind: "memory", content: "postgres migration requires table locks", evidence: "e", ownerModel: "test/main" },
+    ], () => {});
+
+    const branch = [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "fix the database migration" }] } },
+    ];
+    const { pi, handlers, ctx, sentMessages } = makeFakePi(branch);
+    continualHarness(pi);
+
+    // Injection happens first — records attribution ids.
+    await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx());
+
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-attrib-"));
+    writeFileSync(join(dir, "harness.json"), JSON.stringify({}));
+    resetConfigCache();
+    await loadConfig(join(dir, "harness.json"));
+    try {
+      await runRefine(pi, ctx() as never, { proposer: "steering", lookback: 5 });
+      expect(sentMessages.length).toBeGreaterThan(0);
+      expect(sentMessages.some((m) => m.includes("## Harness items injected during this window"))).toBe(true);
+      expect(sentMessages.some((m) => m.includes("postgres migration"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
+  });
+
   it("auto-imports the durable file at startup when autoImport.enabled (bootstrap seam)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-autoimport-"));
     const cfgFile = join(dir, "harness.json");
