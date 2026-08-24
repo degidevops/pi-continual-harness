@@ -545,9 +545,10 @@ defaults (the loader never throws).
 | `remindRefine.everyTurns` | `50` | int | Reminder cadence. |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
 | `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. |
-| `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
+| `autoRefine.commit` | `true` | bool | Flush durable state on each auto-refine (bootstrap seam — carry refinements into the next session). |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
+| `autoImport.enabled` | `false` | bool | Auto-import the durable markdown at session_start (merge, durable wins, never prunes). The full-auto preset turns this on so last session's refinements are live from turn one. |
 
 ### Injection selection (on by default)
 

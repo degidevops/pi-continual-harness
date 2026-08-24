@@ -123,6 +123,48 @@ kind, or `--model <provider/id|active>` to scope the push to one model's items
 (`--model active` = the model driving the command). The harness store itself is
 unchanged by a push — pi-mem gets a separate copy.
 
+## Full-auto preset
+
+Everything below the fold is safe-by-default. If you want the harness fully
+autonomous — refine itself every turn, carry refinements across sessions, and
+execute its own skills — drop this into `~/.pi/agent/harness.json`:
+
+```json
+{
+  "autoRefine": { "enabled": true, "everyTurns": 1, "commit": true },
+  "outcomeImportance": { "enabled": true, "bump": 0.03 },
+  "outcomeEvaluation": {
+    "enabled": true,
+    "promoteBump": 0.02,
+    "demotePenalty": 0.05,
+    "minApplications": 5,
+    "failureRatioThreshold": 0.5
+  },
+  "autoImport": { "enabled": true },
+  "orchestration": { "enabled": true, "mode": "yolo" }
+}
+```
+
+What each switch does in this preset:
+
+- `autoRefine` — every turn, the failure-signature gate runs; high-signal turns
+  escalate to a targeted refine, and `commit: true` flushes durable state so
+  gains survive into the next session.
+- `outcomeImportance` + `outcomeEvaluation` — the fitness loop is fully live:
+  cited items gain importance; deltas are promoted/demoted by measured outcomes.
+- `autoImport` — at session start, the durable file merges back in automatically:
+  yesterday's refinements are live from turn one (bootstrap-updating > frozen).
+- `orchestration.mode: "yolo"` — model-authored skills/sub-agents execute
+  immediately on create/update. **This is the one switch with real teeth**: it
+  means code the model writes can run without you pressing anything. The
+  executors are hardened (identifier-validated entry points, no interpolation,
+  temp dir + 30s timeout) and everything stays audited and rollbackable via
+  `/tree`, but treat yolo as "I have read how skills work and I accept the risk".
+
+Even at full-auto, the guardrails hold: evidence-grounded deltas only, audited
+`harness-refinement` entries, bounded injection, dedupe, decay resistance for
+proven items, and `/tree` rollback of any refinement window.
+
 ## Configuration
 
 Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):

@@ -22,7 +22,8 @@ import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
 import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
 import { registerOutcome, resetOutcome } from "./outcome.js";
-import { getState, reconstruct, setActiveModelKey, STATE_ENTRY } from "./store.js";
+import { getState, reconstruct, reconstructFromDurable, setActiveModelKey, STATE_ENTRY } from "./store.js";
+import { loadConfig, resolveDurablePath } from "./config.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
   // Rebuild in-memory state from the current branch on every session start /
@@ -39,6 +40,27 @@ export default function continualHarness(pi: ExtensionAPI): void {
     // before_agent_start re-caches it before any tool can run.
     setActiveModelKey(undefined);
     reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
+    // Bootstrap seam (Continual Harness §4.3: bootstrap-updating > frozen):
+    // opt-in auto-import of the durable file so refinements carried from
+    // previous sessions are live from turn one, no manual /harness import.
+    // Best-effort: a missing/corrupt durable file never blocks the session.
+    const cfg = await loadConfig();
+    if (cfg.autoImport?.enabled) {
+      const path = resolveDurablePath(cfg, ctx.cwd);
+      try {
+        const res = await reconstructFromDurable(path, {}, (snapshot, ver) => {
+          pi.appendEntry("harness-state", { state: snapshot, version: ver });
+        });
+        if (!res.missingFile && (res.created > 0 || res.updated > 0)) {
+          ctx.ui.notify(
+            `Continual Harness: auto-imported ${res.created} created, ${res.updated} updated from ${path}`,
+            "info",
+          );
+        }
+      } catch (err) {
+        ctx.ui.notify(`Continual Harness auto-import failed: ${(err as Error).message}`, "warning");
+      }
+    }
     const n = getState().items.length;
     if (n > 0) {
       ctx.ui.notify(`Continual Harness: ${n} item(s) restored`, "info");

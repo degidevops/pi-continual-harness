@@ -12,7 +12,7 @@
 // harness_list / harness_mutate tools round-tripping through appendEntry.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -135,6 +135,51 @@ describe("session_start reconstruction", () => {
     await handlers.get("session_start")!({ reason: "startup" }, ctx());
     expect(getState().items).toHaveLength(0);
     expect(notifications).toHaveLength(0);
+  });
+
+  it("auto-imports the durable file at startup when autoImport.enabled (bootstrap seam)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-autoimport-"));
+    const cfgFile = join(dir, "harness.json");
+    // Project-scoped durable path derived from cwd; autoImport on.
+    writeFileSync(cfgFile, JSON.stringify({ autoImport: { enabled: true }, durableScope: "project" }));
+    // Drop any config cached by earlier tests, or loadConfig would ignore this file.
+    resetConfigCache();
+    await loadConfig(cfgFile);
+    try {
+      const { resolveDurablePath } = await import("../src/config.js");
+      const durable = resolveDurablePath(await loadConfig(cfgFile), dir);
+      writeFileSync(
+        durable,
+        [
+          "# Continual Harness State",
+          "",
+          "## Memory facts",
+          "",
+          `- **[h_durable1]** (importance 0.70) carried-over fact`,
+          `  - evidence: refined last session`,
+          `  - model: test/main`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const { pi, handlers, notifications } = makeFakePi([]);
+      continualHarness(pi);
+      const commandCtx = {
+        ui: { notify: (m: string, l: string) => notifications.push({ msg: m, level: l }), setStatus: () => {} },
+        cwd: dir,
+        sessionManager: { getBranch: () => [] as unknown[] },
+        model: undefined,
+      } as never;
+
+      await handlers.get("session_start")!({ reason: "startup" }, commandCtx);
+
+      expect(getState().items.map((i) => i.id)).toContain("h_durable1");
+      expect(notifications.some((n) => n.msg.includes("auto-imported"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 });
 

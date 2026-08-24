@@ -61,6 +61,15 @@ export interface HarnessConfig {
   crossModel?: {
     enabled?: boolean;
   };
+  /** Auto-import the durable markdown at session_start (the bootstrap seam).
+   *  When enabled, the durable file written by /refine --commit or
+   *  autoRefine.commit is merged into the live store automatically at the
+   *  start of every session — no manual /harness import needed. Merge is
+   *  "durable wins" (same as /harness import); never prunes.
+   *  Default OFF (explicit review stance); the full-auto preset turns it on. */
+  autoImport?: {
+    enabled?: boolean;
+  };
   /** Sub-agent/skill orchestration execution.
    *  - enabled=false        → nothing executes (not even manual /harness commands).
    *  - mode="confirm"       → items are stored but NEVER auto-executed by
@@ -100,6 +109,9 @@ export const DEFAULT_CONFIG: HarnessConfig = {
     failureRatioThreshold: 0.5,
   },
   crossModel: { enabled: false },
+  // Bootstrap seam off by default: importing durable state is an explicit,
+  // reviewable action (/harness import) unless you opt in here.
+  autoImport: { enabled: false },
   // Safe by default: model-authored skills/sub-agents are stored but never
   // executed without an explicit user command (/harness run-skill|run-subagent).
   // Opt into full-auto with { "orchestration": { "mode": "yolo" } }.
@@ -122,7 +134,8 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   const o = base.outcomeImportance!;
   const e = base.outcomeEvaluation!;
   const c = base.crossModel!;
-  const orc = base.orchestration!;
+  const ai = base.autoImport!;
+  const orc = base.orchestration!;;
   
   return {
     durableScope: over.durableScope === "project" ? "project" : "global",
@@ -150,6 +163,9 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     },
     crossModel: {
       enabled: (over.crossModel?.enabled ?? c.enabled) as boolean,
+    },
+    autoImport: {
+      enabled: (over.autoImport?.enabled ?? ai.enabled) as boolean,
     },
     orchestration: {
       enabled: (over.orchestration?.enabled ?? orc.enabled) as boolean,
