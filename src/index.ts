@@ -1,8 +1,16 @@
 // pi-continual-harness — online self-improvement layer for pi.
 //
 // Owns ONLY the online optimizer layer over a unified harness-state store.
-// Composes with pi-reflect (offline refinement) and pi-mem (storage); does not
-// reinvent either. Manual /refine only — no autonomous mutation.
+// Composes with pi-reflect (offline refinement) and pi-mem (storage).
+//
+// Safety stance: manual /refine by default. Every autonomous path is opt-in
+// via ~/.pi/agent/harness.json and audited:
+//   - autoRefine.enabled        → turn_end auto-refine (default OFF)
+//   - outcomeImportance.enabled → citation-based promotion (default OFF)
+//   - outcomeEvaluation.enabled → closed-loop promote/demote (default OFF)
+//   - orchestration.mode        → "confirm" by default: model-authored skills/
+//     sub-agents are stored but only executed via explicit user-invoked
+//     /harness run-skill|run-subagent commands; "yolo" opts into full-auto.
 //
 // See README for design rationale and the research it is grounded in.
 

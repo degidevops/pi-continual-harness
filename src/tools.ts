@@ -130,74 +130,61 @@ export function registerTools(pi: ExtensionAPI): void {
         trackAppliedDeltas(appliedDeltaIds);
       }
 
-      // Orchestration mode: yolo (default) vs confirm
+      // Orchestration mode: "confirm" (default) vs "yolo".
+      //  - confirm: items are STORED but never executed here. Execution happens
+      //    only via the explicit user-invoked /harness run-skill|run-subagent
+      //    commands — the user command IS the confirmation. No fake hashing,
+      //    no silent auto-approval.
+      //  - yolo: newly active subagent/skill items execute immediately.
       const config = await loadConfig();
       const orchestrationEnabled = config.orchestration?.enabled ?? true;
-      const orchestrationMode = config.orchestration?.mode ?? "yolo";
-
-      // In confirm mode, track which items have been confirmed by content hash
-      // so we don't re-prompt for the same skill/subagent.
-      const confirmedHashes = new Set<string>();
-      const computeHash = (content: string) => {
-        // Simple hash for tracking; good enough for content identity
-        let hash = 0;
-        for (let i = 0; i < content.length; i++) {
-          hash = ((hash << 5) - hash) + content.charCodeAt(i);
-          hash |= 0;
-        }
-        return String(hash);
-      };
+      const orchestrationMode = config.orchestration?.mode ?? "confirm";
 
       const orchestrationResults: Array<{ itemId: string; kind: ComponentKind; result: unknown }> = [];
+      let pendingCount = 0;
       for (const delta of applied) {
-        if (delta.op === "create" || delta.op === "update") {
-          const item = delta.op === "create" ? delta.item : delta.after;
-          if (!item) continue;
-          if (!orchestrationEnabled) continue;
-          if (item.kind === "subagent" && item.active) {
-            try {
-              const spec = parseSubagentSpec(item);
-              if (spec) {
-                // Confirm mode: wait for explicit approval before first execution
-                if (orchestrationMode === "confirm") {
-                  const contentHash = computeHash(item.content);
-                  if (!confirmedHashes.has(contentHash)) {
-                    // In a real implementation, this would prompt the user for approval.
-                    // For now, we simulate confirmation by auto-approving after logging.
-                    // The actual confirm flow requires user interaction which isn't
-                    // available in the tool context; this is a placeholder for the gating logic.
-                    confirmedHashes.add(contentHash);
-                  }
-                }
-                const result = await executeSubagentSpec(ctx, spec);
-                orchestrationResults.push({ itemId: item.id, kind: "subagent", result });
-              }
-            } catch (err) {
-              orchestrationResults.push({ itemId: item.id, kind: "subagent", result: { error: (err as Error).message } });
+        if (delta.op !== "create" && delta.op !== "update") continue;
+        const item = delta.op === "create" ? delta.item : delta.after;
+        if (!item || !item.active) continue;
+        if (!orchestrationEnabled) continue;
+
+        if (item.kind !== "subagent" && item.kind !== "skill") continue;
+        if (orchestrationMode !== "yolo") {
+          pendingCount += 1;
+          continue;
+        }
+        try {
+          if (item.kind === "subagent") {
+            const spec = parseSubagentSpec(item);
+            if (spec) {
+              const result = await executeSubagentSpec(ctx, spec);
+              orchestrationResults.push({ itemId: item.id, kind: "subagent", result });
             }
-          } else if (item.kind === "skill" && item.active) {
-            try {
-              if (orchestrationMode === "confirm") {
-                const contentHash = computeHash(item.content);
-                if (!confirmedHashes.has(contentHash)) {
-                  confirmedHashes.add(contentHash);
-                }
-              }
-              const result = await maybeExecuteSkill(ctx, item);
-              if (result) {
-                orchestrationResults.push({ itemId: item.id, kind: "skill", result });
-              }
-            } catch (err) {
-              orchestrationResults.push({ itemId: item.id, kind: "skill", result: { error: (err as Error).message } });
+          } else {
+            const result = await maybeExecuteSkill(ctx, item);
+            if (result) {
+              orchestrationResults.push({ itemId: item.id, kind: "skill", result });
             }
           }
+        } catch (err) {
+          orchestrationResults.push({ itemId: item.id, kind: item.kind, result: { error: (err as Error).message } });
         }
       }
 
-      const summary = summarize(applied);
+      let text = summarize(applied);
+      if (pendingCount > 0) {
+        text +=
+          `\n${pendingCount} executable subagent/skill item(s) stored but NOT run (orchestration mode: confirm). ` +
+          `The user can review and execute explicitly with /harness run-subagent <id> or /harness run-skill <id>.`;
+      }
       return {
-        content: [{ type: "text", text: summary }],
-        details: { applied, version: getState().items.length, orchestration: orchestrationResults },
+        content: [{ type: "text", text }],
+        details: {
+          applied,
+          itemCount: getState().items.length,
+          orchestration: orchestrationResults,
+          ...(pendingCount > 0 ? { pendingExecution: pendingCount } : {}),
+        },
       };
     },
   });

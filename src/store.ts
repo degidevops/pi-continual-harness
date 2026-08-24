@@ -183,7 +183,16 @@ export function applyDeltas(
   persist: (snapshot: HarnessState, version: number) => void,
   actorModel?: string,
 ): AppliedDelta[] {
-  const snapshotBefore = { items: state.items.map((i) => ({ ...i })), crossModel: state.crossModel, outcomeTracking: state.outcomeTracking, outcomeEvaluation: state.outcomeEvaluation };
+  // Snapshot EVERYTHING (cursor fields included): a rolled-back batch must not
+  // silently reset the A1 review cursor either.
+  const snapshotBefore: HarnessState = {
+    items: state.items.map((i) => ({ ...i })),
+    crossModel: state.crossModel,
+    outcomeTracking: state.outcomeTracking,
+    outcomeEvaluation: state.outcomeEvaluation,
+    lastReviewedTurn: state.lastReviewedTurn ?? -1,
+    lastReviewedIndex: state.lastReviewedIndex ?? -1,
+  };
   const applied: AppliedDelta[] = [];
   try {
     for (const d of deltas) applied.push(applyOne(d, actorModel));
@@ -459,14 +468,17 @@ let pendingDeltaIds: string[] = [];
  *  These are excluded from outcome evaluation for one turn (A2×B3 interaction). */
 let signalGateDeltaIds: string[] = [];
 
-/** Record delta IDs that were applied this turn (called from harness_mutate). */
+/** Record delta IDs applied this turn (called from harness_mutate).
+ *  APPENDS, not overwrites: several harness_mutate calls can happen in one
+ *  turn and every applied delta deserves B3 evaluation. */
 export function trackAppliedDeltas(deltaIds: string[]): void {
-  pendingDeltaIds = deltaIds;
+  for (const id of deltaIds) if (!pendingDeltaIds.includes(id)) pendingDeltaIds.push(id);
 }
 
-/** Record delta IDs created by the signal-gate (called from auto-refine). */
+/** Record delta IDs created by the signal-gate (called from auto-refine).
+ *  APPENDS for the same reason as trackAppliedDeltas. */
 export function trackSignalGateDeltas(deltaIds: string[]): void {
-  signalGateDeltaIds = deltaIds;
+  for (const id of deltaIds) if (!signalGateDeltaIds.includes(id)) signalGateDeltaIds.push(id);
 }
 
 /** Clear pending delta IDs after outcome evaluation. */
@@ -523,15 +535,20 @@ export async function evaluatePendingOutcomes(
   let hasFailure = false;
   let hasExplicitCorrection = false;
   
-  // Check recent entries for tool errors or user corrections
-  for (const entry of entries.slice(-10).reverse()) {
-    if (entry.type === "custom" && entry.customType === "tool_call" && entry.data?.isError) {
+  // Check recent entries for tool errors or user corrections. Any entry shape
+  // carrying data.isError counts (pi's custom tool_call entries today, other
+  // shapes tomorrow); we do not depend on one customType spelling.
+  type EntryShape = { type?: string; customType?: string; data?: { isError?: boolean }; message?: { role?: string; content?: Array<{ text?: string }> } };
+  const CORRECTION_RE = /\b(salah|sebenarnya|bukan|kurang|harusnya|betulnya|perbaiki|ulang|retry|sorry|my mistake|revert|that'?s wrong)\b/i;
+  for (const raw of entries.slice(-10).reverse()) {
+    const entry = raw as EntryShape;
+    if (entry.data?.isError === true) {
       hasFailure = true;
       break;
     }
     if (entry.type === "message" && entry.message?.role === "user") {
-      const text = (entry.message.content ?? []).map((c: any) => c.text ?? "").join(" ").toLowerCase();
-      if (/\b(salah|sebenarnya|bukan|kurang|harusnya|betulnya|perbaiki|ulang|retry)\b/.test(text)) {
+      const text = (entry.message.content ?? []).map((c) => c.text ?? "").join(" ").toLowerCase();
+      if (CORRECTION_RE.test(text)) {
         hasExplicitCorrection = true;
         hasFailure = true;
         break;

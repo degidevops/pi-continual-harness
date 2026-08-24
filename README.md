@@ -96,7 +96,10 @@ The model-facing tools:
 - `harness_mutate { deltas: [...] }` — apply a batch of `create` / `update` /
   `delete` deltas. Every `create` requires `evidence`. New items are stamped
   automatically with the active model (see [Model binding](#model-binding-per-model-isolation)).
-  **When creating/updating `subagent` or `skill` items, they are automatically executed** (see [Live sub-agent orchestration](#live-sub-agent-orchestration-a4)).
+  **When creating/updating `subagent` or `skill` items**: in the default
+  `orchestration.mode: "confirm"` they are stored but NOT executed — run them
+  explicitly with `/harness run-skill <id>` / `/harness run-subagent <id>`.
+  With `"mode": "yolo"` they execute immediately on create/update (see [Live sub-agent orchestration](#live-sub-agent-orchestration-a4)).
 
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
@@ -131,7 +134,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "escalateProposer": "steering",
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
-  "autoRefine": { "enabled": true, "everyTurns": 1, "commit": false },
+  "autoRefine": { "enabled": false, "everyTurns": 1, "commit": false },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "outcomeEvaluation": {
     "enabled": false,
@@ -141,7 +144,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
     "failureRatioThreshold": 0.5
   },
   "crossModel": { "enabled": false },
-  "orchestration": { "enabled": true, "mode": "yolo" }
+  "orchestration": { "enabled": true, "mode": "confirm" }
 }
 ```
 
@@ -163,15 +166,15 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
-- **`autoRefine`** — autonomous self-improvement (**on by default**, every turn).
-  Runs a two-stage gate: (1) CHEAP `signal` proposer detects HIGH-SIGNAL turns
-  (tool errors, user corrections, task boundaries, explicit refine requests);
-  (2) Only if signals detected, ESCALATE to the configured `escalateProposer`
-  (default: `steering` for full agent reasoning). This avoids noise from running
-  expensive steering on low-signal turns while being genuinely online/reset-free.
-  Reuses the exact `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`,
-  branch-local, `/tree` rollback). Notifies before firing. `commit: true` also
-  flushes durable state on each run.
+- **`autoRefine`** — autonomous self-improvement (**opt-in**, off by default).
+  When enabled it runs a two-stage gate: (1) CHEAP `signal` proposer detects
+  HIGH-SIGNAL turns (tool errors, user corrections, task boundaries, explicit
+  refine requests); (2) Only if signals detected, ESCALATE to the configured
+  `escalateProposer` (default: `steering` for full agent reasoning). This avoids
+  noise from running expensive steering on low-signal turns while being genuinely
+  online/reset-free. Reuses the exact `/refine` routine (audited `REFINE_ENTRY`
+  tagged `source: "auto"`, branch-local, `/tree` rollback). Notifies before
+  firing. `commit: true` also flushes durable state on each run.
 - **`outcomeImportance`** — opt-in autonomous **promotion** loop (off by
   default). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
@@ -183,8 +186,9 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 - **`outcomeEvaluation`** — opt-in **closed-loop outcome evaluation (B3)** (off
   by default). When `enabled`, automatically correlates applied deltas with
   task outcomes at `turn_end`: detects success/failure from tool errors and
-  explicit user corrections ("salah", "sebenarnya", "harusnya", "perbaiki",
-  "ulang"), then promotes (`promoteBump`, default 0.02) on success or demotes
+  explicit user corrections (Indonesian: "salah", "sebenarnya", "harusnya",
+  "perbaiki", "ulang"; English: "sorry", "my mistake", "revert", "that's wrong"),
+  then promotes (`promoteBump`, default 0.02) on success or demotes
   (`demotePenalty`, default 0.05) on failure. Items with failure ratio ≥
   `failureRatioThreshold` (default 0.5) after `minApplications` (default 5)
   are auto-demoted further. This closes the fitness loop: useful deltas rise,
@@ -192,10 +196,19 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   via `/tree`.
 - **`crossModel`** — enable cross-model shared pool (off by default). When
   enabled, models can opt-in to share items with `ownerModel="shared"`.
-- **`orchestration`** — sub-agent/skill execution mode. `enabled` (default: true)
-  controls whether auto-execution runs. `mode` (default: `"yolo"`) can be
-  `"yolo"` (execute immediately) or `"confirm"` (require explicit approval before
-  first execution of a new/changed skill or subagent).
+- **`orchestration`** — sub-agent/skill execution. `enabled` (default: true)
+  gates all execution; when false nothing runs, not even manual commands.
+  `mode` (default: `"confirm"`) controls auto-execution by `harness_mutate`:
+  - `"confirm"` — model-authored items are stored but never executed by the
+    tool; you review and run them explicitly via `/harness run-skill <id>` /
+    `/harness run-subagent <id>` (the user command IS the confirmation).
+  - `"yolo"` — newly active subagent/skill items execute immediately on
+    create/update. Full-auto; only for trusted workflows.
+
+  Executable skill format: YAML front-matter with `language:` (`shell`,
+  `javascript`, `typescript`, `python`) plus optional `entryPoint:` (a plain
+  identifier, validated). Code runs unsandboxed in a temp dir with a 30s
+  timeout — treat skill items like shell commands and only run ones you've read.
 
 ## How it works
 
@@ -209,8 +222,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
    each mutation updates the in-memory state, snapshotted to the session via
    `appendEntry("harness-state", ...)`. New items are stamped with the active
    model (see [Model binding](#model-binding-per-model-isolation)).
-   **When `subagent` or `skill` items are created/updated, they are automatically
-   executed via the registered orchestrator**, closing the spec→execution→evidence loop.
+   When `subagent` or `skill` items are created/updated: in `"mode": "confirm"`
+   (default) they are stored and run only via `/harness run-skill|run-subagent`;
+   in `"yolo"` they execute immediately via the registered orchestrator, closing
+   the spec→execution→evidence loop.
 4. Because pi's session tree branches at any entry, `/tree` navigation gives
    rollback to any pre-refinement point for free — no bespoke snapshot system.
 
@@ -222,6 +237,12 @@ model-agnostic, and keeps every delta visible and reviewable in the transcript.
 `subagent` and `skill` items in the harness are not just static specs — they can
 be **executed live**, closing the loop from self-improved knowledge to action
 to outcome evidence.
+
+> **Execution is confirm-by-default.** With the default `orchestration.mode:
+> "confirm"`, creating/updating these items never runs anything — you execute a
+> spec explicitly with `/harness run-subagent <id>` or `/harness run-skill <id>`.
+> Set `orchestration.mode: "yolo"` in harness.json for immediate execution on
+> create/update.
 
 ### Sub-agent specs (`kind: "subagent"`)
 
@@ -441,7 +462,7 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 - **pi-mem composition**: `/harness push-mem [--all|--kind|--model]` steers the agent
   to persist active items into pi-mem (soft-fail; no dependency).
 - Optional config (`~/.pi/agent/harness.json`): project-local durable scope,
-  remind, **auto-refine (on by default, every turn with signal gate)**,
+  remind, **auto-refine (opt-in; two-stage signal gate)**,
   citation-based outcome promotion, **closed-loop outcome evaluation (opt-in)**,
   cross-model sharing.
 - **Pluggable delta proposers** with a registry: `signal` (default gate),

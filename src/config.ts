@@ -61,10 +61,17 @@ export interface HarnessConfig {
   crossModel?: {
     enabled?: boolean;
   };
-  /** Sub-agent/skill orchestration execution mode. */
+  /** Sub-agent/skill orchestration execution.
+   *  - enabled=false        → nothing executes (not even manual /harness commands).
+   *  - mode="confirm"       → items are stored but NEVER auto-executed by
+   *    harness_mutate; execution happens only via the explicit, user-invoked
+   *    /harness run-skill <id> | run-subagent <id> commands. This is the default.
+   *  - mode="yolo"          → harness_mutate executes newly active subagent/
+   *    skill items immediately (full-auto). Only for trusted workflows.
+   */
   orchestration?: {
-    enabled?: boolean;          // default: true (full-auto)
-    mode?: "yolo" | "confirm";  // default: "yolo"
+    enabled?: boolean;          // default: true (manual execution available)
+    mode?: "confirm" | "yolo";  // default: "confirm"
   };
   /** Injection selection policy (on by default). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/select.ts. */
@@ -74,7 +81,10 @@ export interface HarnessConfig {
 export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
-  autoRefine: { enabled: true, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
+  // Opt-in (matches the documented "no autonomous mutation by default" stance):
+  // turn_end auto-refine only runs when explicitly enabled in harness.json.
+  // All proposal-verification / integration tests set this explicitly.
+  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
   proposer: "signal",
   escalateProposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
@@ -86,7 +96,10 @@ export const DEFAULT_CONFIG: HarnessConfig = {
     failureRatioThreshold: 0.5,
   },
   crossModel: { enabled: false },
-  orchestration: { enabled: true, mode: "yolo" },
+  // Safe by default: model-authored skills/sub-agents are stored but never
+  // executed without an explicit user command (/harness run-skill|run-subagent).
+  // Opt into full-auto with { "orchestration": { "mode": "yolo" } }.
+  orchestration: { enabled: true, mode: "confirm" },
   // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
   // for small stores; protective as the harness accumulates. Opt out with
   // `injection.enabled: false`. See src/select.ts.
@@ -136,7 +149,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     },
     orchestration: {
       enabled: (over.orchestration?.enabled ?? orc.enabled) as boolean,
-      mode: (over.orchestration?.mode ?? orc.mode) as "yolo" | "confirm",
+      mode: (over.orchestration?.mode === "yolo" ? "yolo" : "confirm") as "yolo" | "confirm",
     },
     injection: normalizeInjection(over.injection as Partial<{ enabled: boolean; maxTokens: number; maxPerKind: number; charsPerToken: number }> | undefined),
   };

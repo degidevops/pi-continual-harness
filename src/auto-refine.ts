@@ -26,7 +26,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
-import { runRefine } from "./refine.js";
+import { DEFAULT_LOOKBACK_TURNS, runRefine } from "./refine.js";
 import { signalProposer, type ProposeInput } from "./proposer.js";
 import { snapshotState, trackSignalGateDeltas } from "./store.js";
 
@@ -101,7 +101,11 @@ async function runSignalGate(ctx: ExtensionContext, lookback: number): Promise<s
     trackSignalGateDeltas(signalGateDeltaIds);
   }
   
-  // Extract signals from the rationale (deltas is non-empty here)
+  // Prefer the structured signals the gate proposer returns; fall back to
+  // parsing the rationale only for third-party proposers that predate it.
+  if (result.signals && result.signals.length > 0) {
+    return result.signals;
+  }
   const firstDelta = result.deltas[0]!;
   const rationale = firstDelta.rationale ?? "";
   const match = rationale.match(/signal gate: (.+) triggered refine/);
@@ -117,8 +121,7 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
     const config = await loadConfig();
     if (!evaluateAutoRefine(config, event.turnIndex)) return;
     
-    const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
-    const lookback = config.autoRefine?.everyTurns === 1 ? 25 : 25; // default lookback
+    const lookback = DEFAULT_LOOKBACK_TURNS;
     
     // STAGE 1: GATE - run signal proposer to detect high-signal turns
     const signals = await runSignalGate(ctx, lookback);

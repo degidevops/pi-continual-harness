@@ -245,6 +245,11 @@ export async function maybeExecuteSkill(
 
     if (!language || !code) return null;
 
+    // entryPoint is interpolated into generated JS/TS wrappers, so it MUST be a
+    // plain identifier — anything else would let item content inject code into
+    // the wrapper itself.
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(entryPoint)) return null;
+
     // Execute based on language
     switch (language.toLowerCase()) {
       case "typescript":
@@ -284,8 +289,10 @@ async function executeTypeScript(
   const dir = await mkdtemp(join(tmpdir(), "pi-skill-"));
   const file = join(dir, "skill.ts");
 
-  // Wrap code with entry point call
-  const wrappedCode = `${code}\n\n// Auto-invocation\nconst args = ${JSON.stringify(args)};\nconst result = await ${entryPoint}(args);\nconsole.log(JSON.stringify(result));`;
+  // Wrap code with entry point call. Args cross the boundary as a JSON string
+  // literal (JSON.stringify of the JSON string), never by raw interpolation,
+  // so argument content cannot break out of the wrapper.
+  const wrappedCode = `${code}\n\n// Auto-invocation\nconst args = JSON.parse(${JSON.stringify(JSON.stringify(args))});\nconst result = await ${entryPoint}(args);\nconsole.log(JSON.stringify(result));`;
 
   await writeFile(file, wrappedCode, "utf8");
 
@@ -318,7 +325,7 @@ async function executeJavaScript(
   const dir = await mkdtemp(join(tmpdir(), "pi-skill-"));
   const file = join(dir, "skill.mjs");
 
-  const wrappedCode = `${code}\n\nconst args = ${JSON.stringify(args)};\nconst result = await ${entryPoint}(args);\nconsole.log(JSON.stringify(result));`;
+  const wrappedCode = `${code}\n\nconst args = JSON.parse(${JSON.stringify(JSON.stringify(args))});\nconst result = await ${entryPoint}(args);\nconsole.log(JSON.stringify(result));`;
 
   await writeFile(file, wrappedCode, "utf8");
 
@@ -349,15 +356,14 @@ async function executePython(
   const { spawn } = await import("node:child_process");
 
   const dir = await mkdtemp(join(tmpdir(), "pi-skill-"));
-  const file = join(dir, "skill.py");
-
-  const argsJson = JSON.stringify(args).replace(/"/g, '\\"');
-  const wrappedCode = `${code}\n\nimport json\nargs = json.loads("${argsJson}")\nresult = ${entryPoint}(args)\nprint(json.dumps(result))`;
-
-  await writeFile(file, wrappedCode, "utf8");
+  // Args are passed via a side-car JSON file, never interpolated into the
+  // wrapper source (string interpolation there would be an injection vector).
+  await writeFile(join(dir, "args.json"), JSON.stringify(args), "utf8");
+  const wrappedFile = join(dir, "run.py");
+  await writeFile(wrappedFile, `${code}\n\nimport json\nwith open("args.json") as _f:\n    args = json.load(_f)\nresult = ${entryPoint}(args)\nprint(json.dumps(result))\n`, "utf8");
 
   return new Promise((resolve) => {
-    const child = spawn("python3", [file], { cwd: dir, timeout: 30000 });
+    const child = spawn("python3", [wrappedFile], { cwd: dir, timeout: 30000 });
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (d) => (stdout += d.toString()));

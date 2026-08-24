@@ -85,6 +85,9 @@ export interface ProposedDelta {
 export interface ProposeResult {
   /** Deltas the proposer produced directly (rule-based / model proposers). */
   deltas?: ProposedDelta[];
+  /** Structured signal labels for gate proposers (e.g. ["tool_error"]).
+   *  Lets callers (auto-refine) branch without parsing rationale prose. */
+  signals?: string[];
   /**
    * A steering message for the agent, when the proposer delegates reasoning to
    * the agent loop (the default). runRefine sends this via sendUserMessage.
@@ -152,6 +155,11 @@ const CORRECTION_PATTERNS = [
   /\bbetulnya\b/i,
   /\bseharusnya\b/i,
   /\bjangan\b/i,
+  // English equivalents, kept conservative to limit false positives.
+  /\bsorry\b/i,
+  /\bmy mistake\b/i,
+  /\brevert\b/i,
+  /\bthat'?s wrong\b/i,
 ];
 
 const REFINE_TRIGGER_PATTERNS = [
@@ -164,9 +172,12 @@ const REFINE_TRIGGER_PATTERNS = [
 ];
 
 function hasToolError(evidence: string): boolean {
-  return /\[tool\].*\berror\b/i.test(evidence) ||
-         /\[assistant\].*\btool.*error\b/i.test(evidence) ||
-         /isError.*true/i.test(evidence);
+  // gatherEvidence renders every message entry as "[<role>] text" — roles like
+  // toolResult/tool_call all start with "[tool", so match the prefix family,
+  // not just the literal "[tool]", or real errors are silently missed.
+  return /\[tool\w*\][^\n]*\berror\b/i.test(evidence) ||
+         /\[assistant\].*\btool[^\n]*error\b/i.test(evidence) ||
+         /isError["']?\s*[:=]\s*["']?true/i.test(evidence);
 }
 
 function hasUserCorrection(evidence: string): boolean {
@@ -211,6 +222,7 @@ export const signalProposer: DeltaProposer = {
         },
         rationale: `signal gate: ${signals.join(", ")} triggered refine`,
       }],
+      signals,
     };
   },
 };

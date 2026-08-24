@@ -185,21 +185,30 @@ describe("Phase 4: Proposal verification tests", () => {
     });
   });
 
-  describe("2. Mode test — yolo (default)", () => {
+  describe("2. Mode test — yolo (opt-in)", () => {
     it("auto path: subagent/skill execute immediately without confirmation", async () => {
-      const { pi, tools, ctx } = makeFakePi([]);
-      continualHarness(pi);
-      const mutate = tools.get("harness_mutate")!;
+      const dir = mkdtempSync(join(tmpdir(), "pi-ch-test2-"));
+      const cfgFile = join(dir, "harness.json");
+      writeFileSync(cfgFile, JSON.stringify({ orchestration: { enabled: true, mode: "yolo" } }));
+      await loadConfig(cfgFile);
+      try {
+        const { pi, tools, ctx } = makeFakePi([]);
+        continualHarness(pi);
+        const mutate = tools.get("harness_mutate")!;
 
-      // Create a subagent item
-      const res = await (mutate.execute as any)(undefined, {
-        deltas: [{ op: "create", kind: "subagent", content: "agent: coder\ntask: do something", evidence: "test" }],
-      }, undefined, undefined, ctx());
+        // Create a subagent item
+        const res = await (mutate.execute as any)(undefined, {
+          deltas: [{ op: "create", kind: "subagent", content: "agent: coder\ntask: do something", evidence: "test" }],
+        }, undefined, undefined, ctx());
 
-      expect(res.details.orchestration).toBeDefined();
-      const orch = res.details.orchestration as Array<{ kind: string; result: any }>;
-      expect(orch.some(o => o.kind === "subagent")).toBe(true);
-      expect(orch.find(o => o.kind === "subagent")?.result).toBeDefined();
+        expect(res.details.orchestration).toBeDefined();
+        const orch = res.details.orchestration as Array<{ kind: string; result: any }>;
+        expect(orch.some(o => o.kind === "subagent")).toBe(true);
+        expect(orch.find(o => o.kind === "subagent")?.result).toBeDefined();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        resetConfigCache();
+      }
     });
 
     it("manual path: /harness run-subagent executes via steering message", async () => {
@@ -218,10 +227,11 @@ describe("Phase 4: Proposal verification tests", () => {
     it("manual path: /harness run-skill executes and notifies", async () => {
       const { pi, commands, ctx } = makeFakePi([]);
       continualHarness(pi);
+      // shell skill: no external toolchain (npx/tsx) needed — deterministic.
       applyDeltas([{
         op: "create",
         kind: "skill",
-        content: "---\nlanguage: typescript\nentryPoint: main\n---\nexport async function main(args: any) { return { ok: true }; }",
+        content: "---\nlanguage: shell\n---\necho ok",
         evidence: "test",
         importance: 0.5
       }], () => {});
@@ -232,14 +242,14 @@ describe("Phase 4: Proposal verification tests", () => {
       ctxWithNotify.ui.notify = (msg, level) => notifications.push({ msg, level });
 
       await commands.get("harness")!.handler(`run-skill ${id}`, ctxWithNotify);
-      // Skill execution in test environment may not actually run (no tsx/node),
-      // but the command handler should be called and notify
+      // The command handler must notify with the execution result (exit 0).
       expect(notifications.length).toBeGreaterThanOrEqual(1);
+      expect(notifications.some(n => n.msg.includes("executed"))).toBe(true);
     });
   });
 
-  describe("3. Mode test — confirm", () => {
-    it("auto path: confirm mode config is read", async () => {
+  describe("3. Mode test — confirm (default)", () => {
+    it("auto path: confirm mode stores items but NEVER auto-executes", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-ch-test3-"));
       const cfgFile = join(dir, "harness.json");
       writeFileSync(cfgFile, JSON.stringify({ orchestration: { enabled: true, mode: "confirm" } }));
@@ -254,16 +264,35 @@ describe("Phase 4: Proposal verification tests", () => {
           deltas: [{ op: "create", kind: "subagent", content: "agent: coder\ntask: do something", evidence: "test" }],
         }, undefined, undefined, ctx());
 
-        // In confirm mode, execution still happens (placeholder confirms), but the gating logic is present
-        // The test validates the config is read and the code path exists
-        expect(res.details.orchestration).toBeDefined();
+        // Item is stored; nothing executed; the tool reports the pending count.
+        expect(getState().items).toHaveLength(1);
+        const orch = res.details.orchestration as Array<unknown>;
+        expect(orch).toHaveLength(0);
+        expect(res.details.pendingExecution).toBe(1);
+        expect(res.content[0].text).toContain("run-subagent");
       } finally {
         rmSync(dir, { recursive: true, force: true });
         resetConfigCache();
       }
     });
 
-    it("same content hash does not re-prompt", async () => {
+    it("confirm mode is the default when no config file exists", async () => {
+      resetConfigCache();
+      const { pi, tools, ctx } = makeFakePi([]);
+      continualHarness(pi);
+      const mutate = tools.get("harness_mutate")!;
+
+      const res = await (mutate.execute as any)(undefined, {
+        deltas: [{ op: "create", kind: "skill", content: "---\nlanguage: shell\n---\necho pwned", evidence: "test" }],
+      }, undefined, undefined, ctx());
+
+      // Safe by default: stored, not executed.
+      expect(getState().items).toHaveLength(1);
+      expect((res.details.orchestration as Array<unknown>)).toHaveLength(0);
+      expect(res.details.pendingExecution).toBe(1);
+    });
+
+    it("same-content updates stay stored without execution in confirm mode", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-ch-test3b-"));
       const cfgFile = join(dir, "harness.json");
       writeFileSync(cfgFile, JSON.stringify({ orchestration: { enabled: true, mode: "confirm" } }));
@@ -280,13 +309,13 @@ describe("Phase 4: Proposal verification tests", () => {
 
         // Update with same content (simulating re-apply)
         const itemId = getState().items[0]!.id;
-        await (mutate.execute as any)(undefined, {
+        const res = await (mutate.execute as any)(undefined, {
           deltas: [{ op: "update", id: itemId, content: "same content" }],
         }, undefined, undefined, ctx());
 
-        // Both should execute (hash tracking is per-turn in current implementation)
-        // This validates the hash computation logic exists
+        // Still exactly one item, and nothing was ever executed.
         expect(getState().items).toHaveLength(1);
+        expect(res.details.pendingExecution).toBe(1);
       } finally {
         rmSync(dir, { recursive: true, force: true });
         resetConfigCache();

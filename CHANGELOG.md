@@ -8,6 +8,45 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [Unreleased]
+
+Safety-and-correctness release: execution is confirm-by-default, autonomous
+mutation is opt-in again (matching the documented stance), and several latent
+bugs in the outcome loop and signal gate are fixed.
+
+### Changed (breaking)
+
+- **`orchestration` default is now `{ enabled: true, mode: "confirm" }`
+  (was `yolo`).** Model-authored `subagent`/`skill` items are stored but never
+  auto-executed; run them explicitly with `/harness run-skill <id>` /
+  `/harness run-subagent <id>`. Set `mode: "yolo"` to restore full-auto.
+  The old confirm mode silently auto-approved — the placeholder is gone;
+  confirmation is now a real user action.
+- **`autoRefine.enabled` default is `false` again** (was `true`), matching the
+  documented opt-in stance and every other autonomous path. Enable explicitly
+  with `{ "autoRefine": { "enabled": true } }`.
+
+### Fixed
+
+- A1 rollback bug: a failed delta batch no longer resets the review cursor
+  (`applyDeltas` snapshots cursor fields too).
+- B3 tracking appends instead of overwrites: multiple `harness_mutate` calls in
+  one turn are all evaluated, and signal-gate exclusions accumulate correctly.
+- Signal-gate tool-error detection actually matches rendered evidence
+  (`[toolResult] … error`, not just `[tool] … error`).
+- Outcome-evaluation failure detection accepts any entry with `data.isError`
+  (not only `customType === "tool_call"`) and recognizes English corrections
+  ("sorry", "my mistake", "revert", "that's wrong") alongside Indonesian ones.
+- Orchestration executors hardened: `entryPoint` must be a plain identifier;
+  args cross into JS/TS wrappers as JSON-string literals and into Python via a
+  side-car `args.json` file — no more string interpolation injection vectors.
+- Flaky `run-skill` test no longer depends on `npx tsx` being downloadable.
+
+### Moved
+
+- `extensions/domain-actions` → `examples/domain-actions` (it imported a
+  hypothetical package and was never loadable).
+
 ## [0.8.0] — 2026-08-10
 
 The bounded-injection release. The harness ACCUMULATES notes, but the system
