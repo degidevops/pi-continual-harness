@@ -10,6 +10,30 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Memory / skill / sub-agent systems made real
+
+- **Progressive disclosure for skills**: executable skills render only their
+  `description:` front-matter (or a derived first-line fallback) plus an
+  execution pointer in the system prompt — never the code body. Cost estimation
+  matches, so a 50-line skill costs ~1 line of injection budget.
+- **Skill repair loop closed**: net-failing items (`getFailingItems()`)
+  are always surfaced to the refiner under "items flagged for repair", and the
+  signal gate fires a new `skill_failure` signature so auto-refine targets
+  their repair even on otherwise-quiet turns (paper §4.6).
+- **Relevance-aware memory selection**: `selectForInjection` accepts the latest
+  user message; memories/notes overlapping it earn a small saturating bonus
+  (≤ 0.1) on top of fitness — what gets injected now matches what is happening
+  NOW without drowning authored importance.
+- **Sub-agent outcome reconciliation**: launched sub-agent runs are tracked by
+  runId and reconciled at turn_end against trajectory entries; completions
+  resolve to success/failure recorded against the spec item's delta. Request-
+  echo entries never fabricate outcomes; stale runs (>30 min) are dropped.
+  Sub-agent specs are no longer evolution-blind.
+- **Fixed recurring "Agent is already processing" error** (`Extension
+  "<runtime>"`): steering messages sent from turn_end auto-refine and
+  `/harness push-mem` now pass `{ deliverAs: "steer" }`, queuing correctly when
+  the agent is still streaming instead of throwing.
+
 ### Evolution-loop effectiveness (grounded in arXiv 2605.09998 + ACE 2510.04618)
 
 - **Failure-signature gate** (`src/signals.ts`, single source of truth): the
@@ -40,7 +64,7 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `/harness import`, because a refined harness carried into the next session
   beats a frozen one (paper §4.3: bootstrap-updating > bootstrap-frozen).
 
-## [Unreleased]
+## [0.8.x — safety & correctness, unreleased]
 
 Safety-and-correctness release: execution is confirm-by-default, autonomous
 mutation is opt-in again (matching the documented stance), and several latent

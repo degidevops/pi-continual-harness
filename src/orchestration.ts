@@ -162,6 +162,54 @@ export function parseYaml(text: string): Record<string, unknown> {
   return result;
 }
 
+// ---- progressive disclosure ------------------------------------------------
+//
+// An executable skill's CODE must never be injected verbatim into the system
+// prompt: it eats the injection budget every turn and buries the signal the
+// model actually needs ("this capability exists, here is when to use it").
+// The prompt shows the DESCRIPTION; the code loads only at execution time.
+
+const FRONT_MATTER_RE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+
+/** True when the item carries an executable-skill front-matter block. */
+export function isExecutableSkill(content: string): boolean {
+  const m = content.match(FRONT_MATTER_RE);
+  if (!m) return false;
+  try {
+    const fm = parseYaml(m[1]!);
+    return typeof fm.language === "string" && Boolean(m[2]!.trim());
+  } catch {
+    return false;
+  }
+}
+
+/** The one prompt-facing line for a harness item (progressive disclosure).
+ *  Plain notes render verbatim; executable skills render their `description`
+ *  front-matter field (or a derived fallback) plus an execution pointer —
+ *  never the code body. */
+export function skillPromptLine(item: HarnessItem): string {
+  const m = item.content.match(FRONT_MATTER_RE);
+  if (!m || !isExecutableSkill(item.content)) return item.content;
+  let language = "unknown";
+  let description = "";
+  try {
+    const fm = parseYaml(m[1]!);
+    if (typeof fm.language === "string") language = fm.language;
+    if (typeof fm.description === "string") description = fm.description.trim();
+  } catch {
+    /* fall through to fallbacks */
+  }
+  if (!description) {
+    // Derive from the first comment/code line of the body, trimmed hard.
+    const firstLine = m[2]!
+      .split("\n")
+      .map((l) => l.replace(/^(?:#|\/\/)\s*/, "").trim())
+      .find((l) => l.length > 0);
+    description = firstLine ? firstLine.slice(0, 120) : `${language} skill`;
+  }
+  return `${description} _(executable ${language} skill — run: /harness run-skill ${item.id})_`;
+}
+
 /** Interface for sub-agent orchestration backends. */
 export interface SubagentOrchestrator {
   readonly name: string;
@@ -215,6 +263,7 @@ export async function executeSubagentSpec(
  *  ---
  *  language: typescript | javascript | python | shell
  *  entryPoint: functionName | main
+ *  description: one-line summary shown in the system prompt
  *  ---
  *  // code here
  *

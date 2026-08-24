@@ -2,13 +2,13 @@
 // steering follow-through, and the shared failure-signature detector.
 // Grounded in Continual Harness (arXiv 2605.09998) §3.2/§4.6 and ACE.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
   detectSignals,
   hasRepetitionLoop,
   REPETITION_THRESHOLD,
 } from "../src/signals.js";
-import { fitness, selectForInjection } from "../src/select.js";
+import { fitness, selectForInjection, relevanceBonus, RELEVANCE_BONUS_WEIGHT } from "../src/select.js";
 import {
   applyDeltas,
   decayAndPrune,
@@ -20,6 +20,16 @@ import {
   markSteeringSent,
   pendingSteeringOlderThan,
 } from "../src/refine.js";
+import { skillPromptLine, isExecutableSkill } from "../src/orchestration.js";
+import { getFailingItems } from "../src/store.js";
+import {
+  trackSubagentRun,
+  reconcileSubagentRuns,
+  resetSubagentRuns,
+  pendingSubagentRuns,
+  RUN_TIMEOUT_MS,
+} from "../src/subagent-tracking.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { HarnessItem } from "../src/types.js";
 
 function reset(items: HarnessItem[] = []): void {
@@ -145,5 +155,182 @@ describe("steering follow-through (refine.ts)", () => {
 
     markSteeringActed();
     expect(pendingSteeringOlderThan(0)).toBe(false);
+  });
+});
+
+describe("progressive disclosure for skills (orchestration.ts)", () => {
+  const mkSkill = (content: string): HarnessItem => ({
+    id: "h_skill",
+    kind: "skill",
+    content,
+    evidence: "e",
+    importance: 0.5,
+    active: true,
+    ownerModel: "test/main",
+    createdAt: 0,
+    updatedAt: 0,
+  });
+
+  it("executable skills render their description, never the code", () => {
+    const exec = mkSkill(
+      "---\nlanguage: shell\ndescription: Back up the postgres volume safely\n---\n#!/bin/bash\npg_dump all_the_secrets",
+    );
+    expect(isExecutableSkill(exec.content)).toBe(true);
+    const line = skillPromptLine(exec);
+    expect(line).toContain("Back up the postgres volume safely");
+    expect(line).toContain("/harness run-skill h_skill");
+    expect(line).not.toContain("pg_dump");
+  });
+
+  it("without a description, derives one from the first body line (comment-stripped)", () => {
+    const noDesc = mkSkill(
+      "---\nlanguage: python\n---\n# Clean up stale docker volumes\ndocker system prune --all",
+    );
+    const line = skillPromptLine(noDesc);
+    expect(line).toContain("Clean up stale docker volumes");
+    expect(line).not.toContain("docker system prune");
+  });
+
+  it("plain notes render verbatim and are not flagged executable", () => {
+    const note = "just a note about testing";
+    expect(isExecutableSkill(note)).toBe(false);
+    expect(skillPromptLine(mkSkill(note))).toBe(note);
+  });
+});
+
+describe("relevance-aware selection (select.ts)", () => {
+  const mkNote = (id: string, content: string): HarnessItem => ({
+    id,
+    kind: "memory",
+    content,
+    evidence: "e",
+    importance: 0.5,
+    active: true,
+    ownerModel: "test/main",
+    createdAt: 0,
+    updatedAt: 0,
+    applications: 0,
+    failures: 0,
+  });
+
+  it("memories overlapping the current user message outrank equal-fitness ones", () => {
+    const db = mkNote("h_db", "postgres migration requires locking the database tables first");
+    const css = mkNote("h_css", "the design system uses css grid for dashboard layout");
+    // Budget fits both; the relevant one must lead despite equal fitness.
+    const { selected } = selectForInjection(
+      [css, db],
+      "test/main",
+      { maxTokens: 400 },
+      "we need to fix the database migration locking issue now",
+    );
+    expect(selected[0]!.id).toBe("h_db");
+  });
+
+  it("without recent text, ordering is pure fitness (legacy behavior)", () => {
+    const a = mkNote("h_a", "alpha beta gamma delta epsilon");
+    const b = mkNote("h_b", "unrelated words entirely here friends");
+    const { selected } = selectForInjection([a, b], "test/main");
+    expect(selected.map((i) => i.id)).toEqual(["h_a", "h_b"]); // stable insertion order
+  });
+
+  it("short tokens (<4 chars) never count as relevance overlap", () => {
+    const item = mkNote("h_it", "it was a fix");
+    expect(relevanceBonus(item.content, "fix it now ok do")).toBe(0);
+  });
+});
+
+describe("failing-item repair targets (store.ts)", () => {
+  it("flags active net-failing items only after minFailures", () => {
+    reconstruct([]);
+    applyDeltas(
+      [
+        { op: "create", kind: "skill", content: "broken skill", evidence: "e", deltaId: "d_bad" },
+        { op: "create", kind: "skill", content: "flaky once", evidence: "e" },
+        { op: "create", kind: "skill", content: "healthy skill", evidence: "e" },
+      ],
+      () => {},
+    );
+    const st = getState().items;
+    const bad = st.find((i) => i.content === "broken skill")!;
+    const flaky = st.find((i) => i.content === "flaky once")!;
+    const healthy = st.find((i) => i.content === "healthy skill")!;
+    bad.failures = 3;
+    bad.applications = 1;
+    flaky.failures = 1;
+    healthy.applications = 5;
+    healthy.failures = 1;
+
+    const ids = getFailingItems().map((i) => i.id);
+    expect(ids).toContain(bad.id);
+    expect(ids).not.toContain(flaky.id); // below minFailures
+    expect(ids).not.toContain(healthy.id); // net-positive
+  });
+});
+
+describe("sub-agent outcome reconciliation (subagent-tracking.ts)", () => {
+  beforeEach(() => {
+    resetSubagentRuns();
+    reconstruct([]);
+  });
+
+  function fakeCtx(entries: unknown[]): ExtensionContext {
+    return { sessionManager: { getBranch: () => entries } } as unknown as ExtensionContext;
+  }
+
+  function seedItem(deltaId: string): HarnessItem {
+    applyDeltas([{ op: "create", kind: "subagent", content: "agent: coder\ntask: t", evidence: "e", deltaId }], () => {});
+    return getState().items[getState().items.length - 1]!;
+  }
+
+  it("request-only mentions never fabricate an outcome; completions resolve success", () => {
+    const runId = "run_test_success";
+    const item = seedItem("d_sub_ok");
+    trackSubagentRun(runId, item.id, item.deltaId);
+    // Only the steering request exists so far → nothing resolved.
+    let res = reconcileSubagentRuns(
+      fakeCtx([{ type: "message", message: { role: "user", content: [{ type: "text", text: `/harness subagent:execute ${runId} ...` }] } }]),
+      () => {},
+    );
+    expect(res.resolved).toBe(0);
+    expect(pendingSubagentRuns()).toBe(1);
+
+    // A later tool-result-shaped entry resolves it as success.
+    res = reconcileSubagentRuns(
+      fakeCtx([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: `/harness subagent:execute ${runId}` }] } },
+        { type: "custom", customType: "tool_result", data: { runId, output: "done", status: "completed" } },
+      ]),
+      () => {},
+    );
+    expect(res.resolved).toBe(1);
+    expect(res.successes).toBe(1);
+    expect(pendingSubagentRuns()).toBe(0);
+    expect(item.applications).toBe(1);
+  });
+
+  it("completion entries with error markers record failures against the delta", () => {
+    const runId = "run_test_fail";
+    const item = seedItem("d_sub_fail");
+    trackSubagentRun(runId, item.id, item.deltaId);
+    const res = reconcileSubagentRuns(
+      fakeCtx([
+        { type: "custom", customType: "tool_call", data: { isError: true, runId, error: "boom" } },
+      ]),
+      () => {},
+    );
+    expect(res.resolved).toBe(1);
+    expect(res.failures).toBe(1);
+    expect(item.failures).toBe(1);
+  });
+
+  it("stale runs past RUN_TIMEOUT_MS are dropped without fabricated outcomes", () => {
+    const runId = "run_test_stale";
+    const item = seedItem("d_sub_stale");
+    trackSubagentRun(runId, item.id, item.deltaId, Date.now() - RUN_TIMEOUT_MS - 1000);
+    const res = reconcileSubagentRuns(fakeCtx([]), () => {});
+    expect(res.resolved).toBe(0);
+    expect(pendingSubagentRuns()).toBe(0);
+    expect(item.applications ?? 0).toBe(0);
+    expect(item.failures ?? 0).toBe(0);
   });
 });

@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import { applyDeltas, getActiveModelKey, getState, listItems, trackAppliedDeltas, recordOutcome } from "./store.js";
 import { markSteeringActed } from "./refine.js";
 import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec, registerDefaultOrchestrator } from "./orchestration.js";
+import { trackSubagentRun } from "./subagent-tracking.js";
 import { loadConfig } from "./config.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 
@@ -161,6 +162,8 @@ export function registerTools(pi: ExtensionAPI): void {
             const spec = parseSubagentSpec(item);
             if (spec) {
               const result = await executeSubagentSpec(ctx, spec);
+              // Track for outcome correlation at turn_end (subagent-tracking).
+              trackSubagentRun(result.runId, item.id, item.deltaId);
               orchestrationResults.push({ itemId: item.id, kind: "subagent", result });
             }
           } else {

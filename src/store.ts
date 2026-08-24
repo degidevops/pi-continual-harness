@@ -444,6 +444,19 @@ export function getDemotionCandidates(): HarnessItem[] {
   );
 }
 
+/** Active items whose execution record is net-failing — repair targets for the
+ *  refine gate (Continual Harness §4.6: repair code that raised exceptions).
+ *  Conservative: at least `minFailures` failures AND more failures than
+ *  successes, so one flaky run never flags a healthy item. */
+export function getFailingItems(minFailures = 2): HarnessItem[] {
+  return state.items.filter(
+    (i) =>
+      i.active &&
+      (i.failures ?? 0) >= minFailures &&
+      (i.failures ?? 0) > (i.applications ?? 0),
+  );
+}
+
 // ---- Incremental cursor (A1) ---------------------------------------------
 
 /** Get the last reviewed turn index. */

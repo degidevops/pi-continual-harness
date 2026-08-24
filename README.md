@@ -252,9 +252,18 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
     create/update. Full-auto; only for trusted workflows.
 
   Executable skill format: YAML front-matter with `language:` (`shell`,
-  `javascript`, `typescript`, `python`) plus optional `entryPoint:` (a plain
-  identifier, validated). Code runs unsandboxed in a temp dir with a 30s
-  timeout — treat skill items like shell commands and only run ones you've read.
+  `javascript`, `typescript`, `python`), optional `entryPoint:` (a plain
+  identifier, validated), and optional `description:` — a one-line summary that
+  is what the system prompt shows. **Progressive disclosure:** the code body is
+  never injected; the prompt carries only the description plus an execution
+  pointer, so skills cost ~1 line of budget regardless of size. Code runs
+  unsandboxed in a temp dir with a 30s timeout — treat skill items like shell
+  commands and only run ones you've read.
+
+  Broken skills heal: failed executions are recorded as failures against the
+  item, net-failing items appear under "items flagged for repair" in every
+  refine's evidence, and the signal gate fires `skill_failure` so auto-refine
+  targets their repair (update or delete) even on quiet turns.
 
 ## How it works
 
@@ -286,7 +295,7 @@ to outcome evidence.
 
 > **Execution is confirm-by-default.** With the default `orchestration.mode:
 > "confirm"`, creating/updating these items never runs anything — you execute a
-> spec explicitly with `/harness run-subagent <id>` or `/harness run-skill <id>`.
+> spec explicitly with `/harness run-subagent <id>` or `/harness run-skill <id>`. Sub-agent runs are tracked by a unique run id and reconciled at turn_end against the trajectory: completions resolve to success/failure recorded against the spec item, feeding the same fitness loop as everything else.
 > Set `orchestration.mode: "yolo"` in harness.json for immediate execution on
 > create/update.
 

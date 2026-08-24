@@ -30,6 +30,7 @@
 // factoring pattern remind.ts / auto-refine.ts / outcome.ts use).
 
 import type { ComponentKind, HarnessItem } from "./types.js";
+import { skillPromptLine } from "./orchestration.js";
 
 /** Canonical kind order (shared with inject.ts so there is one source of truth). */
 export const KIND_ORDER: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
@@ -125,12 +126,37 @@ function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-/** fitness desc, then store index asc (stable). */
-function byFitness(a: Ranked, b: Ranked): number {
-  const fa = fitness(a.item);
-  const fb = fitness(b.item);
-  if (fb !== fa) return fb - fa;
-  return a.index - b.index;
+// ---- relevance retrieval ---------------------------------------------------
+
+/** Max relevance bonus on top of fitness. Small by design: relevance breaks
+ *  ties and surfaces what matters NOW, it never outranks proven importance. */
+export const RELEVANCE_BONUS_WEIGHT = 0.1;
+/** Shared tokens needed to earn the full bonus (saturating beyond this). */
+const RELEVANCE_SATURATION = 6;
+/** Tokens shorter than this are noise for matching purposes. */
+const MIN_TOKEN_LEN = 4;
+
+function keywords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length >= MIN_TOKEN_LEN),
+  );
+}
+
+/** Overlap between an item's content and the current turn's user text, as a
+ *  saturating bonus in [0, RELEVANCE_BONUS_WEIGHT]. Pure. */
+export function relevanceBonus(itemContent: string, recentUserText?: string): number {
+  if (!recentUserText) return 0;
+  const a = keywords(itemContent);
+  if (a.size === 0) return 0;
+  const b = keywords(recentUserText);
+  let shared = 0;
+  for (const t of a) if (b.has(t)) shared++;
+  if (shared === 0) return 0;
+  return RELEVANCE_BONUS_WEIGHT * (Math.min(shared, RELEVANCE_SATURATION) / RELEVANCE_SATURATION);
 }
 
 /**
@@ -144,6 +170,10 @@ export function selectForInjection(
   items: HarnessItem[],
   ownerKey: string,
   cfg?: Partial<InjectionConfig>,
+  /** Text of the latest user message — memories/notes overlapping it get a
+   *  small relevance bonus so the injected block matches what is happening NOW.
+   *  Optional; omitted → pure fitness ordering (legacy behavior). */
+  recentUserText?: string,
 ): SelectionResult {
   const n = normalizeInjection(cfg);
 
@@ -164,8 +194,15 @@ export function selectForInjection(
     return { selected, omitted: 0, truncated: false };
   }
 
-  // Fitness desc (outcome-aware), stable on store index (ties keep insertion order).
-  for (const arr of groups.values()) arr.sort(byFitness);
+  // Score = fitness + relevance-to-current-turn; sort desc, stable on store
+  // index (ties keep insertion order).
+  const scored = new Map<Ranked, number>();
+  for (const arr of groups.values()) {
+    for (const r of arr) {
+      scored.set(r, fitness(r.item) + relevanceBonus(r.item.content, recentUserText));
+    }
+    arr.sort((a, b) => (scored.get(b)! !== scored.get(a)! ? scored.get(b)! - scored.get(a)! : a.index - b.index));
+  }
 
   // 2a. CAP per kind (maxPerKind): drop the lowest-importance tail of each kind.
   let omitted = 0;
@@ -195,7 +232,10 @@ export function selectForInjection(
   let remaining = Math.max(0, n.maxTokens - overhead);
   const taken: Ranked[] = [];
   for (const r of queue) {
-    const cost = estimateTokens(`- [${r.item.id}] ${r.item.content}`, n.charsPerToken);
+    // Cost reflects the PROMPT-FACING line (progressive disclosure): an
+    // executable skill's code body never counts against the budget because
+    // it is never injected — only its description line is.
+    const cost = estimateTokens(`- [${r.item.id}] ${skillPromptLine(r.item)}`, n.charsPerToken);
     if (cost <= remaining) {
       remaining -= cost;
       taken.push(r);

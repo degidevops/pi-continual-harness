@@ -19,7 +19,8 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, exportDurable, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
+import { applyDeltas, exportDurable, getFailingItems, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
+import { skillPromptLine } from "./orchestration.js";
 import { getProposer } from "./proposer.js";
 import type { CompleteOptions, CompleteResult, ProposeResult, ProposedDelta } from "./proposer.js";
 
@@ -228,7 +229,11 @@ export async function runRefine(
   }
 
   if (result.steeringMessage) {
-    pi.sendUserMessage(result.steeringMessage);
+    // deliverAs "steer": when fired from turn_end auto-refine the agent may
+    // still be streaming — without this option sendUserMessage throws
+    // "Agent is already processing" (surfaces as Extension "<runtime>" error).
+    // When idle, behavior is unchanged: immediate send + new turn.
+    pi.sendUserMessage(result.steeringMessage, { deliverAs: "steer" });
     markSteeringSent();
   }
   ctx.ui.setStatus("harness", undefined);

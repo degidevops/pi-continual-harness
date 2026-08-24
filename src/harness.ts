@@ -42,6 +42,7 @@ import {
 } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
 import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec } from "./orchestration.js";
+import { trackSubagentRun } from "./subagent-tracking.js";
 import type { ComponentKind, HarnessItem } from "./types.js";
 
 export function registerHarness(pi: ExtensionAPI): void {
@@ -281,8 +282,9 @@ async function handlePushMem(
   }
   const scope = all ? "item(s)" : `${kind ?? "memory"} item(s)`;
   const modelNote = modelFilter !== undefined ? ` [model ${modelFilter || "(orphan)"}]` : "";
+  // deliverAs "steer" — safe when the user runs /harness push-mem mid-turn.
   const msg = buildPushMemPrompt(items, scope);
-  pi.sendUserMessage(msg);
+  pi.sendUserMessage(msg, { deliverAs: "steer" });
   ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
 }
 
@@ -330,6 +332,8 @@ async function handleRunSubagent(
   ctx.ui.setStatus("harness", `Executing subagent ${id}…`);
   try {
     const result = await executeSubagentSpec(ctx, spec);
+    // Track for outcome correlation at turn_end (subagent-tracking).
+    trackSubagentRun(result.runId, item.id, item.deltaId);
     ctx.ui.notify(
       `Subagent ${id} started (run: ${result.runId}, agent: ${result.agent}).`,
       "info",

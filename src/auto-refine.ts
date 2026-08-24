@@ -28,6 +28,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
 import { DEFAULT_LOOKBACK_TURNS, runRefine } from "./refine.js";
 import { detectSignals } from "./signals.js";
+import { getFailingItems } from "./store.js";
 
 // turnIndex of the last auto-refine (or the seeded baseline). -1 = unseen.
 let lastTurn = -1;
@@ -78,7 +79,12 @@ function runSignalGate(ctx: ExtensionContext, lookback: number): string[] {
     if (!text) continue;
     evidenceLines.push(`[${role}] ${text}`);
   }
-  return detectSignals(evidenceLines.join("\n"), lookback);
+  const signals = detectSignals(evidenceLines.join("\n"), lookback);
+  // Repair loop (Continual Harness §4.6): stored skills/sub-agents with a
+  // net-failing execution record are themselves a failure signature — the
+  // refine should target their repair even if this turn was quiet.
+  if (getFailingItems().length > 0) signals.push("skill_failure");
+  return signals;
 }
 
 /** Subscribe to turn_end and run two-stage auto-refine on the configured cadence. */

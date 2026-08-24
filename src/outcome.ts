@@ -25,6 +25,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
 import { bumpImportance, getState, modelKey, evaluatePendingOutcomes } from "./store.js";
+import { reconcileSubagentRuns } from "./subagent-tracking.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
 type AnyEntry = {
@@ -122,6 +123,20 @@ export function registerOutcome(pi: ExtensionAPI): void {
           result.demoted > 0 ? "warning" : "info",
         );
       }
+    }
+
+    // --- 3. Sub-agent run reconciliation ---
+    // Correlate tracked sub-agent launches with their completions in the
+    // trajectory and record outcomes against the spec items. Unconditional:
+    // recording outcomes is audited bookkeeping; only demotion is config-gated.
+    const runs = reconcileSubagentRuns(ctx, (snapshot, ver) => {
+      pi.appendEntry("harness-state", { state: snapshot, version: ver });
+    });
+    if (runs.resolved > 0) {
+      ctx.ui.notify(
+        `Subagent outcome: ${runs.successes} succeeded, ${runs.failures} failed (recorded).`,
+        runs.failures > 0 ? "warning" : "info",
+      );
     }
   });
 }

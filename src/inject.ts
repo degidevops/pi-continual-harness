@@ -21,6 +21,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { adoptOrphans, getState, modelKey, setActiveModelKey, optIntoSharedPool } from "./store.js";
 import { KIND_ORDER, selectForInjection, type InjectionConfig } from "./select.js";
 import { loadConfig } from "./config.js";
+import { skillPromptLine } from "./orchestration.js";
 import type { ComponentKind, HarnessItem, HarnessState } from "./types.js";
 
 const TITLES: Record<ComponentKind, string> = {
@@ -40,7 +41,11 @@ const TITLES: Record<ComponentKind, string> = {
  * If cross-model sharing is enabled and the model is opted in, also includes
  * items with ownerModel="shared".
  */
-export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): string {
+export function renderHarnessBlock(
+  ownerKey?: string,
+  cfg?: InjectionConfig,
+  recentUserText?: string,
+): string {
   if (ownerKey === undefined) return "";
   const state = getState();
   if (state.items.length === 0) return "";
@@ -60,14 +65,16 @@ export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): st
     items = state.items.filter((i) => i.ownerModel === ownerKey);
   }
 
-  const { selected, omitted } = selectForInjection(items, ownerKey, cfg);
+  const { selected, omitted } = selectForInjection(items, ownerKey, cfg, recentUserText);
   if (selected.length === 0) return "";
 
   const sections: string[] = [];
   for (const kind of KIND_ORDER) {
     const forKind = selected.filter((i) => i.kind === kind);
     if (forKind.length === 0) continue;
-    const bullets = forKind.map((i) => `- [${i.id}] ${i.content}`).join("\n");
+    // Progressive disclosure: executable skills render their description line,
+    // never their code body (see orchestration.skillPromptLine).
+    const bullets = forKind.map((i) => `- [${i.id}] ${skillPromptLine(i)}`).join("\n");
     sections.push(`### ${TITLES[kind]}\n${bullets}`);
   }
   if (sections.length === 0) return "";
@@ -89,6 +96,25 @@ export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): st
     );
   }
   return lines.join("\n");
+}
+
+/** Latest user message text on the branch — the relevance signal for
+ *  memory/note selection. undefined when no user message exists yet. */
+function latestUserText(ctx: { sessionManager?: { getBranch?: () => unknown[] } }): string | undefined {
+  const branch = ctx.sessionManager?.getBranch?.();
+  if (!branch) return undefined;
+  const entries = branch as Array<{
+    type?: string;
+    message?: { role?: string; content?: Array<{ text?: string }> };
+  }>;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.type === "message" && e.message?.role === "user") {
+      const text = (e.message.content ?? []).map((c) => c.text ?? "").join(" ").trim();
+      return text || undefined;
+    }
+  }
+  return undefined;
 }
 
 export function registerInjection(pi: ExtensionAPI): void {
@@ -115,7 +141,7 @@ export function registerInjection(pi: ExtensionAPI): void {
     // ON — importance-ordered + bounded — so a growing harness never balloons
     // the system prompt. Opt out via harness.json `injection.enabled: false`.
     const { injection } = await loadConfig();
-    const block = renderHarnessBlock(key, injection);
+    const block = renderHarnessBlock(key, injection, latestUserText(ctx));
     if (!block) return;
     return { systemPrompt: event.systemPrompt + "\n" + block };
   });

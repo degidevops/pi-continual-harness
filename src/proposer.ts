@@ -168,6 +168,7 @@ function buildSignalSteeringPrompt(signals: string[], evidence: string, lookback
     ["repetition_loop", "the same attempt repeated without progress — record what breaks the loop (different approach, missing info, environment constraint)."],
     ["refine_trigger", "an explicit request to remember/refine — honor it with concrete items, not acknowledgments."],
     ["task_boundary", "a new task is starting — check whether existing harness state needs updating before context moves on."],
+    ["skill_failure", "stored skill/sub-agent item(s) keep failing execution — find them under 'items flagged for repair' in the evidence below and UPDATE their content to fix the root cause (or DELETE if unfixable)."],
   ] as Array<[string, string]>;
 
   const lines = [
