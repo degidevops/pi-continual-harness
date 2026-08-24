@@ -129,33 +129,51 @@ describe("signalProposer (gate proposer)", () => {
 [assistant] doing well`;
     const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
     expect(r.deltas ?? []).toHaveLength(0);
+    expect(r.steeringMessage).toBeUndefined();
   });
 
-  it("fires on tool error signal", async () => {
+  it("fires on tool error signal with targeted steering (no noise delta)", async () => {
     const evidence = `[user] do something
 [assistant] calling tool
 [tool] error: something failed
 [assistant] tool error occurred`;
     const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
-    expect(r.deltas).toHaveLength(1);
-    expect(r.deltas![0]!.rationale).toContain("tool_error");
+    // Gate proposes NO deltas — creating a generic "Signal detected" note is
+    // store noise. It escalates via a steering message instead.
+    expect(r.deltas ?? []).toHaveLength(0);
+    expect(r.signals).toContain("tool_error");
+    expect(r.steeringMessage).toContain("tool_error");
+    expect(r.steeringMessage).toContain("harness_mutate");
   });
 
-  it("fires on user correction (Indonesian patterns)", async () => {
+  it("fires on user correction (Indonesian patterns) with diagnosis guidance", async () => {
     const evidence = `[user] sebenarnya cara itu salah
 [assistant] oh i see
 [user] harusnya pakai yang lain`;
     const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
-    expect(r.deltas).toHaveLength(1);
-    expect(r.deltas![0]!.rationale).toContain("user_correction");
+    expect(r.signals).toEqual(["user_correction"]);
+    expect(r.steeringMessage).toContain("user_correction");
+    expect(r.steeringMessage).toContain("preference or fact");
+  });
+
+  it("detects repetition loops (same attempt ≥3 times)", async () => {
+    const line = "[assistant] running npm install again";
+    const evidence = [line, line, line].join("\n");
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.signals).toContain("repetition_loop");
+  });
+
+  it("does not flag short ack lines as repetition", async () => {
+    const evidence = ["[assistant] ok", "[assistant] ok", "[assistant] ok"].join("\n");
+    const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
+    expect(r.signals ?? []).not.toContain("repetition_loop");
   });
 
   it("fires on explicit refine trigger", async () => {
     const evidence = `[user] refine the harness please
 [assistant] sure`;
     const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
-    expect(r.deltas).toHaveLength(1);
-    expect(r.deltas![0]!.rationale).toContain("refine_trigger");
+    expect(r.signals).toContain("refine_trigger");
   });
 
   it("fires on task boundary (sparse trajectory)", async () => {
@@ -166,23 +184,17 @@ describe("signalProposer (gate proposer)", () => {
 [user] continuing the task
 [assistant] sure`;
     const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 25 });
-    expect(r.deltas).toHaveLength(1);
-    expect(r.deltas![0]!.rationale).toContain("task_boundary");
+    expect(r.signals).toContain("task_boundary");
   });
 
-  it("returns delta with correct structure", async () => {
+  it("steering message follows the steering-proposer discipline (list → mutate, no wholesale rewrite)", async () => {
     const evidence = `[user] sebenarnya itu salah
 [assistant] understood`;
     const r = await signalProposer.propose({ evidence, state: { items: [] }, lookback: 10 });
-    expect(r.deltas).toHaveLength(1);
-    const delta = r.deltas![0]!.delta;
-    expect(delta.op).toBe("create");
-    if (delta.op === "create") {
-      expect(delta.kind).toBe("prompt");
-      expect(delta.importance).toBe(0.6);
-      expect(delta.content).toContain("Signal detected:");
-      expect(delta.evidence).toContain("Auto-detected signals:");
-    }
+    expect(r.steeringMessage).toContain("harness_list");
+    expect(r.steeringMessage).toContain("surgical CRUD deltas");
+    // The old noise-delta content must be gone.
+    expect(r.deltas ?? []).toHaveLength(0);
   });
 });
 

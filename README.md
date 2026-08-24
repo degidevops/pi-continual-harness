@@ -53,7 +53,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 /refine 50           # review last 50 turns
 /refine 25 --commit  # also export durable state to ~/.pi/agent/harness-state.md
 /refine --proposer dedupe  # run the rule-based dedupe proposer instead of steering
-/refine --proposer signal  # run the cheap gate proposer (detects tool errors, user corrections, task boundaries)
+/refine --proposer signal  # run the failure-signature gate (detects tool errors, corrections, repetition loops; escalates via targeted steering)
 ```
 
 Durable I/O (round-trip with pi-reflect):
@@ -167,14 +167,18 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
 - **`autoRefine`** — autonomous self-improvement (**opt-in**, off by default).
-  When enabled it runs a two-stage gate: (1) CHEAP `signal` proposer detects
-  HIGH-SIGNAL turns (tool errors, user corrections, task boundaries, explicit
-  refine requests); (2) Only if signals detected, ESCALATE to the configured
-  `escalateProposer` (default: `steering` for full agent reasoning). This avoids
-  noise from running expensive steering on low-signal turns while being genuinely
+  When enabled it runs a two-stage gate (Continual Harness §3.2): (1) CHEAP
+  failure-signature detection — tool errors, user corrections, **repetition
+  loops** (same attempt ≥3×), explicit refine requests, task boundaries;
+  (2) Only if signatures are detected, ESCALATE to the configured
+  `escalateProposer` (default: `steering`, and the signal-gate steering message
+  names the signatures so the refine targets them). This avoids noise from
+  running expensive steering on low-signal turns while being genuinely
   online/reset-free. Reuses the exact `/refine` routine (audited `REFINE_ENTRY`
   tagged `source: "auto"`, branch-local, `/tree` rollback). Notifies before
-  firing. `commit: true` also flushes durable state on each run.
+  firing. `commit` defaults to `true`: each auto-refine flushes durable state,
+  the bootstrap seam that lets a refined harness carry into the next session
+  (`/harness import`).
 - **`outcomeImportance`** — opt-in autonomous **promotion** loop (off by
   default). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
@@ -362,11 +366,14 @@ The policy (pure, deterministic; `src/select.ts`):
 
 1. **Filter** — only active items bound to the active model (strict per-model
    isolation, unchanged).
-2. **Order** — importance desc; ties keep store/insertion order (stable). The
-   highest-fitness notes lead each section.
+2. **Order** — outcome-aware fitness: importance desc, plus a small bonus
+   (≤ 0.05) for items with a proven track record (successful applications vs
+   failures). Items that demonstrably help rise; failing ones sink — without
+   letting outcome data drown authored importance. Ties keep store/insertion
+   order (stable).
 3. **Cap** — `maxPerKind` (default 10: balanced sections, no single kind drowns
    the block), then `maxTokens` (default 1500: total budget). The budget is
-   filled **round-robin across kinds by importance rank**, so one kind cannot
+   filled **round-robin across kinds by fitness rank**, so one kind cannot
    starve the others; within that order an item that doesn't fit is **skipped**
    (not a hard stop), so a large item never blocks smaller higher-priority ones.
 
@@ -400,7 +407,7 @@ deltas directly). The propose stage is pluggable via a registry
 
 | Name | What it does |
 |---|---|
-| `signal` (default) | **Cheap gate**: detects HIGH-SIGNAL turns (tool errors, user corrections "sebenarnya/salah/bukan/kurang/harusnya", explicit refine requests "refine/perbaiki/catat", task boundaries). When signals fire, applies a signal note directly. No model call. |
+| `signal` (default) | **Failure-signature gate** (Continual Harness §3.2): detects tool errors, user corrections ("sebenarnya/salah/kurang/harusnya", "sorry/my mistake/revert"), **repetition loops** (the same attempt ≥3× = the navigation-loop analog), explicit refine requests "refine/perbaiki/catat", task boundaries. When signatures fire it escalates via a **targeted steering message naming them** (diagnose this failure → encode the durable fix) instead of applying a generic note. No model call. |
 | `steering` | Delegates reasoning to the agent via a steering message — reuses the agent loop, model-agnostic, fully visible. |
 | `dedupe` | Rule-based: drops near-duplicate active items (token-overlap ≥ 0.6), keeping the higher-importance one. No model call. |
 

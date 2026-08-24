@@ -13,8 +13,11 @@
 // Policy (pure, deterministic, unit-tested in test/select.test.ts):
 //   1. FILTER — active items bound to the active model (strict per-model
 //      isolation, same rule inject.ts always enforced).
-//   2. ORDER  — importance desc; ties keep store/insertion order (stable), so
-//      the highest-fitness notes lead each section.
+//   2. ORDER  — outcome-aware fitness: importance desc, with a small bonus for
+//      PROVEN items (successful applications vs failures, Continual Harness §4.6:
+//      skills that are invoked productively survive and lead; ACE fitness).
+//      Ties keep store/insertion order (stable), so the highest-fitness notes
+//      lead each section.
 //   3. CAP    — `maxPerKind` (balanced sections: no single kind drowns the
 //      block), then `maxTokens` (total budget). The budget is filled
 //      round-robin across kinds by importance rank, so one kind cannot starve
@@ -99,9 +102,34 @@ interface Ranked {
   index: number; // store position, for a stable tie-break on equal importance
 }
 
-/** importance desc, then store index asc (stable). */
-function byImportance(a: Ranked, b: Ranked): number {
-  if (b.item.importance !== a.item.importance) return b.item.importance - a.item.importance;
+/** Max outcome bonus added to importance when ranking. Deliberately small:
+ *  outcomes break ties and reward proven items without drowning authored
+ *  importance. */
+export const OUTCOME_BONUS_WEIGHT = 0.05;
+/** Applications needed to earn the full bonus (diminishing beyond this). */
+const OUTCOME_SATURATION = 5;
+
+/** Outcome-aware fitness in [importance, importance + OUTCOME_BONUS_WEIGHT].
+ *  successRate × saturating applications: an item with a perfect but short
+ *  track record earns partial credit; failures subtract proportionally. */
+export function fitness(item: HarnessItem): number {
+  const apps = item.applications ?? 0;
+  const fails = item.failures ?? 0;
+  if (apps + fails === 0) return item.importance;
+  const saturation = Math.min(apps + fails, OUTCOME_SATURATION) / OUTCOME_SATURATION;
+  const successRate = apps / (apps + fails);
+  return clamp01(item.importance + OUTCOME_BONUS_WEIGHT * saturation * successRate);
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+/** fitness desc, then store index asc (stable). */
+function byFitness(a: Ranked, b: Ranked): number {
+  const fa = fitness(a.item);
+  const fb = fitness(b.item);
+  if (fb !== fa) return fb - fa;
   return a.index - b.index;
 }
 
@@ -136,8 +164,8 @@ export function selectForInjection(
     return { selected, omitted: 0, truncated: false };
   }
 
-  // Importance desc, stable on store index (ties keep insertion order).
-  for (const arr of groups.values()) arr.sort(byImportance);
+  // Fitness desc (outcome-aware), stable on store index (ties keep insertion order).
+  for (const arr of groups.values()) arr.sort(byFitness);
 
   // 2a. CAP per kind (maxPerKind): drop the lowest-importance tail of each kind.
   let omitted = 0;

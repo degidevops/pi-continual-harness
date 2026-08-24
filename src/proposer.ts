@@ -136,96 +136,64 @@ export const steeringProposer: DeltaProposer = {
 
 // ---- rule-based alternate: signal (gate proposer) -------------------------
 //
-// Cheap, heuristic gate that detects HIGH-SIGNAL turns worthy of a refine:
-//   1. Tool errors (tool_call with isError=true)
-//   2. Explicit user corrections ("sebenarnya", "salah", "bukan begitu", "kurang", "harusnya")
-//   3. Task boundary: new user message after a long gap (no messages for N turns)
-//   4. Explicit refine request (user says "refine", "perbaiki", "update harness")
-//
-// Returns deltas directly when ANY signal fires (so refine runs immediately),
-// else returns {} (no-op) to skip the expensive steering proposer.
-// Pure function of evidence — no model call, fully testable.
+// Failure-signature GATE in the sense of Continual Harness (arXiv 2605.09998
+// §3.2): detect high-signal turns cheaply, then ESCALATE to a targeted refine
+// that names the detected signatures. Detection lives in signals.ts (shared
+// with turn_end auto-refine). When signals fire, the proposer returns a
+// STEERING MESSAGE conditioned on those signatures — it does NOT create a
+// generic "Signal detected" note. That was store noise: an item whose content
+// carried no durable lesson, violating the evidence-groundedness rule every
+// other create must follow.
 
-const CORRECTION_PATTERNS = [
-  /\bsebenarnya\b/i,
-  /\bsalah\b/i,
-  /\bbukan begitu\b/i,
-  /\bkurang\b/i,
-  /\bharusnya\b/i,
-  /\bbetulnya\b/i,
-  /\bseharusnya\b/i,
-  /\bjangan\b/i,
-  // English equivalents, kept conservative to limit false positives.
-  /\bsorry\b/i,
-  /\bmy mistake\b/i,
-  /\brevert\b/i,
-  /\bthat'?s wrong\b/i,
-];
-
-const REFINE_TRIGGER_PATTERNS = [
-  /\brefine\b/i,
-  /\bperbaiki\b/i,
-  /\bupdate harness\b/i,
-  /\bharness.*update\b/i,
-  /\bcatat\b/i,
-  /\bingat\b/i,
-];
-
-function hasToolError(evidence: string): boolean {
-  // gatherEvidence renders every message entry as "[<role>] text" — roles like
-  // toolResult/tool_call all start with "[tool", so match the prefix family,
-  // not just the literal "[tool]", or real errors are silently missed.
-  return /\[tool\w*\][^\n]*\berror\b/i.test(evidence) ||
-         /\[assistant\].*\btool[^\n]*error\b/i.test(evidence) ||
-         /isError["']?\s*[:=]\s*["']?true/i.test(evidence);
-}
-
-function hasUserCorrection(evidence: string): boolean {
-  const userMsgs = evidence.split('\n').filter(l => l.startsWith('[user]'));
-  return userMsgs.some(msg => CORRECTION_PATTERNS.some(p => p.test(msg)));
-}
-
-function hasRefineTrigger(evidence: string): boolean {
-  const userMsgs = evidence.split('\n').filter(l => l.startsWith('[user]'));
-  return userMsgs.some(msg => REFINE_TRIGGER_PATTERNS.some(p => p.test(msg)));
-}
-
-function hasTaskBoundary(evidence: string, lookback: number): boolean {
-  const userLines = evidence.split('\n').filter(l => l.startsWith('[user]'));
-  if (userLines.length <= 1) return false;
-  const totalEntries = evidence.split('\n').length;
-  return totalEntries < lookback * 0.3;
-}
+import { detectSignals } from "./signals.js";
 
 export const signalProposer: DeltaProposer = {
   name: "signal",
   async propose({ evidence, lookback }): Promise<ProposeResult> {
-    const signals: string[] = [];
-    
-    if (hasToolError(evidence)) signals.push("tool_error");
-    if (hasUserCorrection(evidence)) signals.push("user_correction");
-    if (hasRefineTrigger(evidence)) signals.push("refine_trigger");
-    if (hasTaskBoundary(evidence, lookback)) signals.push("task_boundary");
-    
+    const signals = detectSignals(evidence, lookback);
     if (signals.length === 0) {
-      return {}; // no-op: skip refine, no signal detected
+      return {}; // no-op: skip refine, no failure signature detected
     }
-    
-    return {
-      deltas: [{
-        delta: {
-          op: "create",
-          kind: "prompt",
-          content: `Signal detected: ${signals.join(", ")} — review trajectory for improvements`,
-          evidence: `Auto-detected signals: ${signals.join(", ")} in last ${lookback} turns`,
-          importance: 0.6,
-        },
-        rationale: `signal gate: ${signals.join(", ")} triggered refine`,
-      }],
-      signals,
-    };
+    return { signals, steeringMessage: buildSignalSteeringPrompt(signals, evidence, lookback) };
   },
 };
+
+/** Steering prompt targeted at the observed failure signatures — the agent is
+ *  asked to diagnose THOSE and encode the durable fix, per ACE's itemized-
+ *  update discipline (no wholesale rewrites, every create grounded). */
+function buildSignalSteeringPrompt(signals: string[], evidence: string, lookback: number): string {
+  const diagnosis = [
+    ["tool_error", "a tool call failed — find out WHY it failed and whether a guardrail/check would have caught it earlier."],
+    ["user_correction", "the user corrected you — capture the preference or fact that was wrong as a memory/prompt item so it sticks."],
+    ["repetition_loop", "the same attempt repeated without progress — record what breaks the loop (different approach, missing info, environment constraint)."],
+    ["refine_trigger", "an explicit request to remember/refine — honor it with concrete items, not acknowledgments."],
+    ["task_boundary", "a new task is starting — check whether existing harness state needs updating before context moves on."],
+  ] as Array<[string, string]>;
+
+  const lines = [
+    `/refine (signal-gated self-improvement, last ${lookback} turns)`,
+    "",
+    `Failure signatures detected in this window: ${signals.join(", ")}.`,
+    "",
+    "Diagnose each detected signature against the trajectory evidence below and update the Continual Harness state so the SAME failure is less likely next time:",
+    "",
+  ];
+  for (const s of signals) {
+    const d = diagnosis.find(([k]) => k === s);
+    if (d) lines.push(`- ${s}: ${d[1]}`);
+  }
+  lines.push(
+    "",
+    "Steps:",
+    "1. Call harness_list to see current state.",
+    "2. Call harness_mutate with small, surgical CRUD deltas: UPDATE the item that should have prevented this failure, CREATE one only for a genuinely new durable lesson (with concrete evidence from this trajectory), DELETE items contradicted by what happened.",
+    "3. If nothing durable is learnable (one-off flake), say so and do nothing — do not manufacture notes.",
+    "",
+    "## Trajectory evidence",
+    evidence,
+  );
+  return lines.join("\n");
+}
 
 // ---- rule-based alternate: dedupe -----------------------------------------
 

@@ -26,6 +26,31 @@ import type { CompleteOptions, CompleteResult, ProposeResult, ProposedDelta } fr
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
 
+// ---- steering follow-through ---------------------------------------------
+//
+// The steering path delegates reasoning to the agent — but nothing verified
+// the agent ever ACTED on it. A refine that silently produces no mutation is
+// a lost learning opportunity and invisible to the user. Track when a
+// steering message was sent; harness_mutate clears the marker; the turn_end
+// reminder nudges once if too much time passes with no action.
+
+let steeringSentAt: number | undefined;
+
+/** Called by runRefine when it hands reasoning to the agent. */
+export function markSteeringSent(): void {
+  steeringSentAt = Date.now();
+}
+
+/** Called whenever harness_mutate applies deltas (the agent acted). */
+export function markSteeringActed(): void {
+  steeringSentAt = undefined;
+}
+
+/** True when a steering message has been waiting unactioned for > ms. */
+export function pendingSteeringOlderThan(ms: number): boolean {
+  return steeringSentAt !== undefined && Date.now() - steeringSentAt > ms;
+}
+
 /** Test hook: reset internal cursors (resets the persisted cursor in state). */
 export function resetRefineCursor(pi?: ExtensionAPI): void {
   if (pi) {
@@ -204,6 +229,7 @@ export async function runRefine(
 
   if (result.steeringMessage) {
     pi.sendUserMessage(result.steeringMessage);
+    markSteeringSent();
   }
   ctx.ui.setStatus("harness", undefined);
   return {

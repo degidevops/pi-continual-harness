@@ -84,7 +84,11 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   // Opt-in (matches the documented "no autonomous mutation by default" stance):
   // turn_end auto-refine only runs when explicitly enabled in harness.json.
   // All proposal-verification / integration tests set this explicitly.
-  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
+  // commit defaults to TRUE when enabled: flushing durable state on each
+  // auto-refine is the bootstrap seam — a refined harness carried into the
+  // next session beats a frozen one (Continual Harness §4.3, bootstrap-updating
+  // vs bootstrap-frozen). Import it back with /harness import.
+  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: true },
   proposer: "signal",
   escalateProposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },

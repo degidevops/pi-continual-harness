@@ -241,6 +241,10 @@ export function reconstruct(entries: Iterable<unknown>): void {
  *  - decayAfterDays: if set, items whose updatedAt is older than this get
  *    importance -= decayStep (default 0.1) before pruning. Time-since-update
  *    is a weak proxy for staleness; pair with /harness keep|drop for signal.
+ *  - PROVEN items resist decay (Continual Harness §4.6: skills that keep being
+ *    invoked productively are exactly the ones worth keeping): items with a
+ *    net-positive outcome record (applications > failures) skip decay
+ *    entirely until their record turns negative.
  *  - Items below IMPORTANCE_FLOOR after decay are removed.
  */
 export function decayAndPrune(
@@ -254,6 +258,11 @@ export function decayAndPrune(
   if (ms !== undefined) {
     for (const i of state.items) {
       if (now - i.updatedAt > ms) {
+        const apps = i.applications ?? 0;
+        const fails = i.failures ?? 0;
+        // Net-positive track record = the most recent evidence says "still
+        // useful" → this item does not age out while it keeps proving itself.
+        if (apps > fails) continue;
         i.importance = clamp(i.importance - step);
         decayed += 1;
       }

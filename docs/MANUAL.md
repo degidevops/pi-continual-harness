@@ -560,9 +560,11 @@ The policy (pure, deterministic; `src/select.ts`):
 
 1. **Filter** — only active items bound to the active model (per-model
    isolation, unchanged).
-2. **Order** — importance desc; ties keep store/insertion order (stable).
+2. **Order** — outcome-aware fitness: importance desc plus a small bonus
+   (≤ 0.05) for items with a proven track record (applications vs failures);
+   ties keep store/insertion order (stable).
 3. **Cap** — `maxPerKind` (balanced sections), then `maxTokens` (total budget).
-   The budget is filled **round-robin across kinds by importance rank**, so one
+   The budget is filled **round-robin across kinds by fitness rank**, so one
    kind cannot starve the others; an item that doesn't fit is **skipped** (not a
    hard stop), so a large item never blocks smaller higher-priority ones.
 

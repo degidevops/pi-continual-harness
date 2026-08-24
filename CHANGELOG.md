@@ -10,6 +10,38 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Evolution-loop effectiveness (grounded in arXiv 2605.09998 + ACE 2510.04618)
+
+- **Failure-signature gate** (`src/signals.ts`, single source of truth): the
+  signal gate now detects the paper's failure signatures — tool errors, user
+  corrections, explicit refine requests, task boundaries, and a NEW
+  `repetition_loop` signature (the same attempt ≥3× in a window = the
+  navigation-loop analog). turn_end auto-refine calls the detector directly.
+- **Targeted escalation instead of noise**: when signatures fire, the gate
+  returns a steering message that NAMES them with per-signature diagnosis
+  guidance — it no longer creates a generic "Signal detected" prompt note
+  (store noise that violated evidence-groundedness).
+- **Outcome-aware injection ranking** (`select.ts`): injected items are ranked
+  by fitness = importance + up to 0.05 bonus from the applications/failures
+  record (saturating at 5 outcomes). Proven items rise; failing ones sink;
+  authored importance can never be drowned by outcome data.
+- **Decay resistance**: items with a net-positive outcome record
+  (applications > failures) skip time-based decay entirely — skills that keep
+  proving themselves don't age out while they keep winning.
+- **Execution→outcome loop closed**: `/harness run-skill` and yolo-path skill
+  executions record success/failure against the item's deltaId, so broken
+  skills are flagged for repair via the B3 fitness loop (paper §4.6: repair
+  code that raised exceptions).
+- **Steering follow-through nudge**: if a steering refine is sent and no
+  `harness_mutate` follows within 10 minutes, turn_end surfaces it once —
+  refinements can no longer be silently dropped.
+- **Bootstrap compounding**: `autoRefine.commit` now defaults to `true` when
+  auto-refine is enabled — each refine flushes durable state for
+  `/harness import`, because a refined harness carried into the next session
+  beats a frozen one (paper §4.3: bootstrap-updating > bootstrap-frozen).
+
+## [Unreleased]
+
 Safety-and-correctness release: execution is confirm-by-default, autonomous
 mutation is opt-in again (matching the documented stance), and several latent
 bugs in the outcome loop and signal gate are fixed.

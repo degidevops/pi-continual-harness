@@ -8,7 +8,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { applyDeltas, getActiveModelKey, getState, listItems, trackAppliedDeltas } from "./store.js";
+import { applyDeltas, getActiveModelKey, getState, listItems, trackAppliedDeltas, recordOutcome } from "./store.js";
+import { markSteeringActed } from "./refine.js";
 import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec, registerDefaultOrchestrator } from "./orchestration.js";
 import { loadConfig } from "./config.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
@@ -120,6 +121,8 @@ export function registerTools(pi: ExtensionAPI): void {
         },
         getActiveModelKey(),
       );
+      // The agent acted on a refinement — clear the pending-steering nudge.
+      markSteeringActed();
 
       // Track applied delta IDs for automatic outcome evaluation (B3)
       const appliedDeltaIds = applied
@@ -164,6 +167,26 @@ export function registerTools(pi: ExtensionAPI): void {
             const result = await maybeExecuteSkill(ctx, item);
             if (result) {
               orchestrationResults.push({ itemId: item.id, kind: "skill", result });
+              // Close the execution→outcome loop (Continual Harness §4.6):
+              // a skill that raised exceptions is recorded as a failure against
+              // the item's delta so the B3 fitness loop can demote/flag it for
+              // repair — exactly how the paper repairs skills that errored.
+              const ok = result.exitCode === 0 && !result.error;
+              if (item.deltaId) {
+                recordOutcome(
+                  { deltaId: item.deltaId, success: ok, turnIndex: -1, ...(result.error ? { error: result.error } : {}) },
+                  (snapshot, ver) => {
+                    pi.appendEntry("harness-state", { state: snapshot, version: ver });
+                  },
+                );
+              }
+              if (!ok) {
+                orchestrationResults.push({
+                  itemId: item.id,
+                  kind: "skill",
+                  result: { error: `skill failed (exit ${result.exitCode}) — consider harness_mutate update to repair it` },
+                });
+              }
             }
           }
         } catch (err) {

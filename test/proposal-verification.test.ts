@@ -441,11 +441,11 @@ describe("Phase 4: Proposal verification tests", () => {
         lookback: 25,
       };
       const result = await signalProposer.propose(input);
-      expect(result.deltas).toBeDefined();
-      expect(result.deltas!.length).toBeGreaterThan(0);
-      const signals = result.deltas![0]!.rationale.match(/signal gate: (.+) triggered refine/);
-      expect(signals).toBeTruthy();
-      expect(signals![1]).toContain("tool_error");
+      // Gate escalates via targeted steering (no noise deltas)
+      expect(result.signals).toBeDefined();
+      expect(result.signals!.length).toBeGreaterThan(0);
+      expect(result.signals).toContain("tool_error");
+      expect(result.steeringMessage).toContain("tool_error");
     });
 
     it("signal proposer detects user correction in evidence", async () => {
@@ -456,11 +456,9 @@ describe("Phase 4: Proposal verification tests", () => {
         lookback: 25,
       };
       const result = await signalProposer.propose(input);
-      expect(result.deltas).toBeDefined();
-      expect(result.deltas!.length).toBeGreaterThan(0);
-      const signals = result.deltas![0]!.rationale.match(/signal gate: (.+) triggered refine/);
-      expect(signals).toBeTruthy();
-      expect(signals![1]).toContain("user_correction");
+      expect(result.signals).toBeDefined();
+      expect(result.signals!.length).toBeGreaterThan(0);
+      expect(result.signals).toContain("user_correction");
     });
   });
 });

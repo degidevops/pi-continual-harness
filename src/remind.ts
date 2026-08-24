@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
+import { markSteeringActed, pendingSteeringOlderThan } from "./refine.js";
 
 // turnIndex of the last reminder (or the baseline we seeded from). -1 = unseen.
 let lastTurn = -1;
@@ -36,9 +37,21 @@ export function evaluateReminder(config: HarnessConfig, turnIndex: number): bool
   return false;
 }
 
-/** Subscribe to turn_end and notify on the configured cadence. */
+/** Subscribe to turn_end: (a) nudge once when a steering refine was never
+ *  acted upon (informational — always on), and (b) the opt-in cadence reminder. */
 export function registerReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
+    // (a) Steering follow-through: a /refine handed reasoning to the agent but
+    // no harness_mutate followed within 10 minutes → surface it once.
+    if (pendingSteeringOlderThan(10 * 60_000)) {
+      markSteeringActed();
+      ctx.ui.notify(
+        "A recent /refine sent a refinement request to the agent, but no harness_mutate followed. Run /refine again or ask the agent to apply the pending harness updates.",
+        "warning",
+      );
+    }
+
+    // (b) Cadence reminder (opt-in).
     const config = await loadConfig();
     if (!evaluateReminder(config, event.turnIndex)) return;
     const every = config.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS;

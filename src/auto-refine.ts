@@ -5,12 +5,12 @@
 //   { "autoRefine": { "enabled": true, "everyTurns": 1, "commit": false } }
 //
 // When enabled and the cadence elapses, it runs a TWO-STAGE gate approach (A2):
-//   1. GATE: Run the rule-based `signal` proposer on every turn to detect
-//      HIGH-SIGNAL turns (tool errors, user corrections, task boundaries,
-//      explicit refine requests). This is CHEAP — no model call.
-//   2. ESCALATE: Only if the gate detects signals, run the actual refine
-//      with the configured proposer (default: `signal` which applies the
-//      signal note directly, or `steering` for full agent reasoning).
+//   1. GATE: Detect failure signatures in the recent window (tool errors,
+//      user corrections, repetition loops, explicit refine requests, task
+//      boundaries). This is CHEAP — pure detection, no model call.
+//   2. ESCALATE: Only if signatures are detected, run the actual refine with
+//      the configured proposer (default: `steering` — and the signal-gate
+//      steering prompt names the signatures so the refine targets them).
 //
 // This avoids the noise of running the expensive steering proposer on every
 // low-signal turn, while still being genuinely online/reset-free (every turn
@@ -27,8 +27,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
 import { DEFAULT_LOOKBACK_TURNS, runRefine } from "./refine.js";
-import { signalProposer, type ProposeInput } from "./proposer.js";
-import { snapshotState, trackSignalGateDeltas } from "./store.js";
+import { detectSignals } from "./signals.js";
 
 // turnIndex of the last auto-refine (or the seeded baseline). -1 = unseen.
 let lastTurn = -1;
@@ -59,11 +58,11 @@ export function evaluateAutoRefine(config: HarnessConfig, turnIndex: number): bo
 }
 
 /**
- * Run the signal proposer as a cheap gate to detect if this turn has
- * high-signal events worth a full refine. Returns the detected signals
- * (empty array = no signals, skip refine).
+ * Run the failure-signature gate (Continual Harness §3.2) to detect if this
+ * turn's window is worth a full refine. Pure detection — no proposer call,
+ * no state snapshot. Returns detected signatures ([] = skip refine).
  */
-async function runSignalGate(ctx: ExtensionContext, lookback: number): Promise<string[]> {
+function runSignalGate(ctx: ExtensionContext, lookback: number): string[] {
   const entries = ctx.sessionManager.getBranch() as any[];
   const messages = entries.filter((e) => e.type === "message" && e.message);
   
@@ -79,40 +78,7 @@ async function runSignalGate(ctx: ExtensionContext, lookback: number): Promise<s
     if (!text) continue;
     evidenceLines.push(`[${role}] ${text}`);
   }
-  const evidence = evidenceLines.join("\n");
-  
-  const input: ProposeInput = {
-    evidence,
-    state: snapshotState(),
-    lookback,
-  };
-  
-  const result = await signalProposer.propose(input);
-  if (!result.deltas || result.deltas.length === 0) {
-    return [];
-  }
-  
-  // Track signal-gate delta IDs for A2×B3 exclusion from outcome evaluation
-  const signalGateDeltaIds = result.deltas
-    .filter(d => d.delta.op === "create")
-    .map((d): string => (d.delta as { deltaId: string }).deltaId)
-    .filter((id): id is string => Boolean(id));
-  if (signalGateDeltaIds.length > 0) {
-    trackSignalGateDeltas(signalGateDeltaIds);
-  }
-  
-  // Prefer the structured signals the gate proposer returns; fall back to
-  // parsing the rationale only for third-party proposers that predate it.
-  if (result.signals && result.signals.length > 0) {
-    return result.signals;
-  }
-  const firstDelta = result.deltas[0]!;
-  const rationale = firstDelta.rationale ?? "";
-  const match = rationale.match(/signal gate: (.+) triggered refine/);
-  if (match && match[1]) {
-    return match[1].split(", ").map(s => s.trim());
-  }
-  return ["signal_detected"];
+  return detectSignals(evidenceLines.join("\n"), lookback);
 }
 
 /** Subscribe to turn_end and run two-stage auto-refine on the configured cadence. */
@@ -123,8 +89,8 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
     
     const lookback = DEFAULT_LOOKBACK_TURNS;
     
-    // STAGE 1: GATE - run signal proposer to detect high-signal turns
-    const signals = await runSignalGate(ctx, lookback);
+    // STAGE 1: GATE - detect failure signatures in the recent window
+    const signals = runSignalGate(ctx, lookback);
     
     if (signals.length === 0) {
       // No signals detected - skip expensive refine, but log for visibility
