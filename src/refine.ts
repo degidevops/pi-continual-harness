@@ -21,7 +21,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, exportDurable, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
 import { getProposer } from "./proposer.js";
-import type { CompleteOptions, CompleteResult } from "./proposer.js";
+import type { CompleteOptions, CompleteResult, ProposeResult, ProposedDelta } from "./proposer.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
@@ -72,6 +72,8 @@ export interface RefineResult {
   proposer: string;
   /** Deltas the proposer applied directly (0 for the steering path). */
   applied: number;
+  /** Error message if proposer or apply failed. */
+  applyError?: string;
 }
 
 /**
@@ -94,22 +96,37 @@ export async function runRefine(
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback, messages);
-  // Persist the cursor immediately so it's captured in the next state snapshot
-  setReviewCursor(messages.length, messages.length, (snapshot, ver) => 
-    pi.appendEntry("harness-state", { state: snapshot, version: ver })
-  );
   
   // Inject a one-shot model completion (built from ctx) so dedicated-model
   // proposers can make a hidden LLM call. Undefined when no model is resolvable.
   const complete = buildComplete(ctx);
   // Pass a defensive copy: proposers are a public extension point and must not
   // be able to mutate the live store outside applyDeltas (no audit / no rollback).
-  const result = await proposer.propose({
-    evidence,
-    state: snapshotState(),
-    lookback,
-    ...(complete ? { complete } : {}),
-  });
+  let result: ProposeResult;
+  try {
+    result = await proposer.propose({
+      evidence,
+      state: snapshotState(),
+      lookback,
+      ...(complete ? { complete } : {}),
+    });
+  } catch (err) {
+    const applyError = (err as Error).message;
+    ctx.ui.notify(`Proposer "${proposer.name}" failed: ${applyError}`, "warning");
+    // A1: Don't advance cursor on proposer failure
+    pi.appendEntry(REFINE_ENTRY, {
+      lookback,
+      commit,
+      startedAt: Date.now(),
+      source,
+      proposer: proposer.name,
+      applied: 0,
+      rationales: [],
+      applyError,
+    });
+    ctx.ui.setStatus("harness", undefined);
+    return { evidenceBytes: evidence.length, lookback, commit, source, proposer: proposer.name, applied: 0, applyError };
+  }
   const proposedDeltas = result.deltas ?? [];
   // Stamp direct-apply create deltas with the active model so proposer-authored
   // notes bind to the model driving the turn (the steering path is stamped in
@@ -128,7 +145,7 @@ export async function runRefine(
     // so we surface the failure as an audited no-op rather than crashing /refine.
     try {
       const appliedDeltas = applyDeltas(
-        proposedDeltas.map((d) => {
+        proposedDeltas.map((d: ProposedDelta) => {
           const delta = d.delta;
           return ownerKey !== undefined && delta.op === "create"
             ? { ...delta, ownerModel: ownerKey }
@@ -147,6 +164,15 @@ export async function runRefine(
     }
   }
 
+  // A1: Only advance the review cursor AFTER successful applyDeltas.
+  // If proposer fails (network error, etc.), cursor does NOT advance,
+  // so the same evidence window is retried on the next run.
+  if (applyError === undefined) {
+    setReviewCursor(messages.length, messages.length, (snapshot, ver) =>
+      pi.appendEntry("harness-state", { state: snapshot, version: ver })
+    );
+  }
+
   // Audit trail (branchable via /tree). `source` distinguishes manual /refine
   // from opt-in auto-refine; `proposer` records WHICH strategy ran; the
   // rationales make rule-based decisions visible in the transcript.
@@ -157,7 +183,7 @@ export async function runRefine(
     source,
     proposer: proposer.name,
     applied,
-    rationales: proposedDeltas.map((d) => d.rationale),
+    rationales: proposedDeltas.map((d: ProposedDelta) => d.rationale),
     // Hidden model spend made visible: dedicated-model proposers report what the
     // call cost (model, tokens, latency, ok/error). Absent for rule-based/steering.
     ...(result.modelCall ? { modelCall: result.modelCall } : {}),

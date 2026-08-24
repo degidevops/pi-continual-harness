@@ -313,6 +313,14 @@ async function handleRunSubagent(
     return;
   }
 
+  // Check orchestration mode
+  const config = await loadConfig();
+  const orchestrationEnabled = config.orchestration?.enabled ?? true;
+  if (!orchestrationEnabled) {
+    ctx.ui.notify(`Orchestration is disabled in config.`, "warning");
+    return;
+  }
+
   const spec = parseSubagentSpec(item);
   if (!spec) {
     ctx.ui.notify(`Could not parse subagent spec from item ${id}.`, "warning");
@@ -355,6 +363,14 @@ async function handleRunSkill(
   }
   if (!item.active) {
     ctx.ui.notify(`Item ${id} is inactive.`, "warning");
+    return;
+  }
+
+  // Check orchestration mode
+  const config = await loadConfig();
+  const orchestrationEnabled = config.orchestration?.enabled ?? true;
+  if (!orchestrationEnabled) {
+    ctx.ui.notify(`Orchestration is disabled in config.`, "warning");
     return;
   }
 

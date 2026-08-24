@@ -28,7 +28,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
 import { runRefine } from "./refine.js";
 import { signalProposer, type ProposeInput } from "./proposer.js";
-import { snapshotState } from "./store.js";
+import { snapshotState, trackSignalGateDeltas } from "./store.js";
 
 // turnIndex of the last auto-refine (or the seeded baseline). -1 = unseen.
 let lastTurn = -1;
@@ -92,6 +92,15 @@ async function runSignalGate(ctx: ExtensionContext, lookback: number): Promise<s
     return [];
   }
   
+  // Track signal-gate delta IDs for A2×B3 exclusion from outcome evaluation
+  const signalGateDeltaIds = result.deltas
+    .filter(d => d.delta.op === "create")
+    .map((d): string => (d.delta as { deltaId: string }).deltaId)
+    .filter((id): id is string => Boolean(id));
+  if (signalGateDeltaIds.length > 0) {
+    trackSignalGateDeltas(signalGateDeltaIds);
+  }
+  
   // Extract signals from the rationale (deltas is non-empty here)
   const firstDelta = result.deltas[0]!;
   const rationale = firstDelta.rationale ?? "";
@@ -132,7 +141,7 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
         { 
           lookback,
           commit: config.autoRefine?.commit ?? false, 
-          ...(config.proposer ? { proposer: config.proposer } : {}) 
+          ...(config.escalateProposer ? { proposer: config.escalateProposer } : {}) 
         },
         "auto",
       );

@@ -268,7 +268,7 @@ export async function maybeExecuteSkill(
   }
 }
 
-// ---- Language executors (minimal, sandboxed) ----
+// ---- Language executors (spawn + timeout, no isolation) ----
 
 async function executeTypeScript(
   code: string,

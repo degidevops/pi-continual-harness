@@ -14,6 +14,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadConfig } from "./config.js";
 import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState, OwnerModel } from "./types.js";
 
 const STATE_ENTRY = "harness-state";
@@ -35,7 +36,7 @@ const DEFAULT_OUTCOME_EVALUATION = {
   enabled: false,
   promoteBump: 0.02,
   demotePenalty: 0.05,
-  minApplications: 3,
+  minApplications: 5,
   failureRatioThreshold: 0.5,
 };
 
@@ -454,9 +455,18 @@ export function setReviewCursor(
 /** Track which deltas were applied in the current turn for outcome correlation. */
 let pendingDeltaIds: string[] = [];
 
+/** Track delta IDs created by the signal-gate (auto-refine) in the current turn.
+ *  These are excluded from outcome evaluation for one turn (A2×B3 interaction). */
+let signalGateDeltaIds: string[] = [];
+
 /** Record delta IDs that were applied this turn (called from harness_mutate). */
 export function trackAppliedDeltas(deltaIds: string[]): void {
   pendingDeltaIds = deltaIds;
+}
+
+/** Record delta IDs created by the signal-gate (called from auto-refine). */
+export function trackSignalGateDeltas(deltaIds: string[]): void {
+  signalGateDeltaIds = deltaIds;
 }
 
 /** Clear pending delta IDs after outcome evaluation. */
@@ -464,23 +474,48 @@ export function clearPendingDeltas(): void {
   pendingDeltaIds = [];
 }
 
+/** Clear signal-gate delta IDs after one turn of exclusion. */
+export function clearSignalGateDeltas(): void {
+  signalGateDeltaIds = [];
+}
+
 /** Get pending delta IDs for outcome evaluation. */
 export function getPendingDeltas(): string[] {
   return pendingDeltaIds;
+}
+
+/** Get signal-gate delta IDs for exclusion. */
+export function getSignalGateDeltas(): string[] {
+  return signalGateDeltaIds;
 }
 
 /**
  * Automatically evaluate outcomes for pending deltas based on turn result.
  * Called at turn_end when outcomeEvaluation is enabled.
  * Detects success/failure from tool errors and explicit user corrections.
+ * Excludes deltas created by the signal-gate in the same turn (A2×B3 interaction).
  */
-export function evaluatePendingOutcomes(
+export async function evaluatePendingOutcomes(
   ctx: ExtensionContext,
   persist: (snapshot: HarnessState, version: number) => void,
-): { promoted: number; demoted: number } {
-  const evalConfig = state.outcomeEvaluation ?? DEFAULT_OUTCOME_EVALUATION;
+): Promise<{ promoted: number; demoted: number }> {
+  const evalConfig = (await loadConfig()).outcomeEvaluation ?? DEFAULT_OUTCOME_EVALUATION;
+  const demotePenalty = evalConfig.demotePenalty ?? DEFAULT_OUTCOME_EVALUATION.demotePenalty;
+  const promoteBump = evalConfig.promoteBump ?? DEFAULT_OUTCOME_EVALUATION.promoteBump;
+  const minAppsLocal = evalConfig.minApplications ?? DEFAULT_OUTCOME_EVALUATION.minApplications;
+  const failureRatioThreshLocal = evalConfig.failureRatioThreshold ?? DEFAULT_OUTCOME_EVALUATION.failureRatioThreshold;
   if (!evalConfig.enabled) return { promoted: 0, demoted: 0 };
   if (pendingDeltaIds.length === 0) return { promoted: 0, demoted: 0 };
+
+  // A2×B3: Exclude signal-gate deltas from evaluation in the same turn.
+  // They get a one-turn grace period before being evaluated.
+  const signalGateDeltas = new Set(signalGateDeltaIds);
+  const deltasToEvaluate = pendingDeltaIds.filter((id) => !signalGateDeltas.has(id));
+  if (deltasToEvaluate.length === 0) {
+    // Only signal-gate deltas pending; clear the exclusion for next turn
+    clearSignalGateDeltas();
+    return { promoted: 0, demoted: 0 };
+  }
 
   const entries = ctx.sessionManager.getBranch() as any[];
   
@@ -507,20 +542,20 @@ export function evaluatePendingOutcomes(
   let promoted = 0;
   let demoted = 0;
   
-  for (const deltaId of pendingDeltaIds) {
+  for (const deltaId of deltasToEvaluate) {
     const item = state.items.find((i) => i.deltaId === deltaId);
     if (!item) continue;
 
     if (hasFailure) {
       item.failures = (item.failures ?? 0) + 1;
       // Apply demotion penalty immediately for failure
-      item.importance = clamp(item.importance - evalConfig.demotePenalty);
+      item.importance = clamp(item.importance - demotePenalty);
       item.updatedAt = Date.now();
       demoted++;
     } else {
       item.applications = (item.applications ?? 0) + 1;
       // Apply promotion bump for success
-      item.importance = clamp(item.importance + evalConfig.promoteBump);
+      item.importance = clamp(item.importance + promoteBump);
       item.updatedAt = Date.now();
       promoted++;
     }
@@ -529,10 +564,10 @@ export function evaluatePendingOutcomes(
     // Check auto-demotion threshold
     const apps = item.applications ?? 0;
     const fails = item.failures ?? 0;
-    if (apps >= evalConfig.minApplications) {
+    if (apps >= minAppsLocal) {
       const ratio = fails / apps;
-      if (ratio >= evalConfig.failureRatioThreshold) {
-        item.importance = clamp(item.importance - evalConfig.demotePenalty);
+      if (ratio >= failureRatioThreshLocal) {
+        item.importance = clamp(item.importance - demotePenalty);
         demoted++;
       }
     }
@@ -544,6 +579,8 @@ export function evaluatePendingOutcomes(
   }
   
   clearPendingDeltas();
+  // Clear signal-gate exclusion after one turn so they can be evaluated next time
+  clearSignalGateDeltas();
   return { promoted, demoted };
 }
 

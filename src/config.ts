@@ -32,8 +32,11 @@ export interface HarnessConfig {
     everyTurns?: number;
     commit?: boolean;
   };
-  /** Delta proposer name (see proposer.ts registry). Defaults to "signal" (gate proposer). */
+  /** Delta proposer name for the GATE stage (see proposer.ts registry). Defaults to "signal" (gate proposer). */
   proposer?: string;
+  /** Delta proposer name for the ESCALATE stage (when gate detects signals).
+   *  Defaults to "steering" (full agent reasoning). */
+  escalateProposer?: string;
   /** Opt-in turn_end outcome loop: promote importance of items the agent
    *  references by their [h_xxxx] tag. Off by default (autonomous mutation). */
   outcomeImportance?: {
@@ -58,6 +61,11 @@ export interface HarnessConfig {
   crossModel?: {
     enabled?: boolean;
   };
+  /** Sub-agent/skill orchestration execution mode. */
+  orchestration?: {
+    enabled?: boolean;          // default: true (full-auto)
+    mode?: "yolo" | "confirm";  // default: "yolo"
+  };
   /** Injection selection policy (on by default). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/select.ts. */
   injection?: NormalizedInjection;
@@ -68,15 +76,17 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: true, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
   proposer: "signal",
+  escalateProposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
   outcomeEvaluation: {
     enabled: false,
     promoteBump: 0.02,
     demotePenalty: 0.05,
-    minApplications: 3,
+    minApplications: 5,
     failureRatioThreshold: 0.5,
   },
   crossModel: { enabled: false },
+  orchestration: { enabled: true, mode: "yolo" },
   // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
   // for small stores; protective as the harness accumulates. Opt out with
   // `injection.enabled: false`. See src/select.ts.
@@ -90,12 +100,12 @@ let cached: HarnessConfig | undefined;
 /** Merge a (possibly partial) parsed file over the defaults. */
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   const base = DEFAULT_CONFIG;
-  // Non-null assertions on base config since DEFAULT_CONFIG is fully populated
   const r = base.remindRefine!;
   const a = base.autoRefine!;
   const o = base.outcomeImportance!;
   const e = base.outcomeEvaluation!;
   const c = base.crossModel!;
+  const orc = base.orchestration!;
   
   return {
     durableScope: over.durableScope === "project" ? "project" : "global",
@@ -109,6 +119,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       commit: (over.autoRefine?.commit ?? a.commit) as boolean,
     },
     proposer: (over.proposer ?? base.proposer!) as string,
+    escalateProposer: (over.escalateProposer ?? base.escalateProposer!) as string,
     outcomeImportance: {
       enabled: (over.outcomeImportance?.enabled ?? o.enabled) as boolean,
       bump: coerceBump(over.outcomeImportance?.bump),
@@ -123,9 +134,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     crossModel: {
       enabled: (over.crossModel?.enabled ?? c.enabled) as boolean,
     },
-    // normalizeInjection is defensive (bad types → defaults), so a partial or
-    // malformed `injection` object degrades to the shipped defaults rather than
-    // corrupting the block sizing arithmetic.
+    orchestration: {
+      enabled: (over.orchestration?.enabled ?? orc.enabled) as boolean,
+      mode: (over.orchestration?.mode ?? orc.mode) as "yolo" | "confirm",
+    },
     injection: normalizeInjection(over.injection as Partial<{ enabled: boolean; maxTokens: number; maxPerKind: number; charsPerToken: number }> | undefined),
   };
 }

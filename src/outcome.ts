@@ -113,7 +113,7 @@ export function registerOutcome(pi: ExtensionAPI): void {
     // Automatically correlates applied deltas with task outcomes (success/failure)
     // and promotes/demotes accordingly.
     if (config.outcomeEvaluation?.enabled) {
-      const result = evaluatePendingOutcomes(ctx, (snapshot, ver) => {
+      const result = await evaluatePendingOutcomes(ctx, (snapshot, ver) => {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });
       if (result.promoted > 0 || result.demoted > 0) {

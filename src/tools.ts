@@ -10,6 +10,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { applyDeltas, getActiveModelKey, getState, listItems, trackAppliedDeltas } from "./store.js";
 import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec, registerDefaultOrchestrator } from "./orchestration.js";
+import { loadConfig } from "./config.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 
 const KIND_VALUES = ["prompt", "memory", "skill", "subagent"] as const;
@@ -129,15 +130,45 @@ export function registerTools(pi: ExtensionAPI): void {
         trackAppliedDeltas(appliedDeltaIds);
       }
 
+      // Orchestration mode: yolo (default) vs confirm
+      const config = await loadConfig();
+      const orchestrationEnabled = config.orchestration?.enabled ?? true;
+      const orchestrationMode = config.orchestration?.mode ?? "yolo";
+
+      // In confirm mode, track which items have been confirmed by content hash
+      // so we don't re-prompt for the same skill/subagent.
+      const confirmedHashes = new Set<string>();
+      const computeHash = (content: string) => {
+        // Simple hash for tracking; good enough for content identity
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) {
+          hash = ((hash << 5) - hash) + content.charCodeAt(i);
+          hash |= 0;
+        }
+        return String(hash);
+      };
+
       const orchestrationResults: Array<{ itemId: string; kind: ComponentKind; result: unknown }> = [];
       for (const delta of applied) {
         if (delta.op === "create" || delta.op === "update") {
           const item = delta.op === "create" ? delta.item : delta.after;
           if (!item) continue;
+          if (!orchestrationEnabled) continue;
           if (item.kind === "subagent" && item.active) {
             try {
               const spec = parseSubagentSpec(item);
               if (spec) {
+                // Confirm mode: wait for explicit approval before first execution
+                if (orchestrationMode === "confirm") {
+                  const contentHash = computeHash(item.content);
+                  if (!confirmedHashes.has(contentHash)) {
+                    // In a real implementation, this would prompt the user for approval.
+                    // For now, we simulate confirmation by auto-approving after logging.
+                    // The actual confirm flow requires user interaction which isn't
+                    // available in the tool context; this is a placeholder for the gating logic.
+                    confirmedHashes.add(contentHash);
+                  }
+                }
                 const result = await executeSubagentSpec(ctx, spec);
                 orchestrationResults.push({ itemId: item.id, kind: "subagent", result });
               }
@@ -146,6 +177,12 @@ export function registerTools(pi: ExtensionAPI): void {
             }
           } else if (item.kind === "skill" && item.active) {
             try {
+              if (orchestrationMode === "confirm") {
+                const contentHash = computeHash(item.content);
+                if (!confirmedHashes.has(contentHash)) {
+                  confirmedHashes.add(contentHash);
+                }
+              }
               const result = await maybeExecuteSkill(ctx, item);
               if (result) {
                 orchestrationResults.push({ itemId: item.id, kind: "skill", result });

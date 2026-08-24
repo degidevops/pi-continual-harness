@@ -128,6 +128,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 {
   "durableScope": "global",
   "proposer": "signal",
+  "escalateProposer": "steering",
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
   "autoRefine": { "enabled": true, "everyTurns": 1, "commit": false },
@@ -136,10 +137,11 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
     "enabled": false,
     "promoteBump": 0.02,
     "demotePenalty": 0.05,
-    "minApplications": 3,
+    "minApplications": 5,
     "failureRatioThreshold": 0.5
   },
-  "crossModel": { "enabled": false }
+  "crossModel": { "enabled": false },
+  "orchestration": { "enabled": true, "mode": "yolo" }
 }
 ```
 
@@ -152,24 +154,24 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   ON by default: items are importance-ordered, capped at `maxPerKind` (default
   10) per kind and `maxTokens` (default 1500) total. Set `enabled: false` to
   restore the legacy "inject all items, in store order" behaviour.
-- **`proposer`** — which delta proposer `/refine` and auto-refine use. Defaults
+- **`proposer`** — which delta proposer the GATE stage of auto-refine uses. Defaults
   to `signal` (cheap gate: detects tool errors, user corrections, task boundaries,
-  explicit refine requests; escalates to steering only when signals fire).
-  `steering` delegates reasoning to the agent. `dedupe` applies a rule-based
+  explicit refine requests). `steering` delegates reasoning to the agent. `dedupe` applies a rule-based
   dedupe directly. See [Proposers](#proposers).
+- **`escalateProposer`** — which delta proposer the ESCALATE stage of auto-refine uses
+  (when the gate detects signals). Defaults to `steering` (full agent reasoning).
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
 - **`autoRefine`** — autonomous self-improvement (**on by default**, every turn).
   Runs a two-stage gate: (1) CHEAP `signal` proposer detects HIGH-SIGNAL turns
   (tool errors, user corrections, task boundaries, explicit refine requests);
-  (2) Only if signals detected, ESCALATE to the configured proposer
-  (default: `signal` which applies the signal note directly, or `steering` for
-  full agent reasoning). This avoids noise from running expensive steering on
-  low-signal turns while being genuinely online/reset-free. Reuses the exact
-  `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`, branch-local,
-  `/tree` rollback). Notifies before firing. `commit: true` also flushes durable
-  state on each run.
+  (2) Only if signals detected, ESCALATE to the configured `escalateProposer`
+  (default: `steering` for full agent reasoning). This avoids noise from running
+  expensive steering on low-signal turns while being genuinely online/reset-free.
+  Reuses the exact `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`,
+  branch-local, `/tree` rollback). Notifies before firing. `commit: true` also
+  flushes durable state on each run.
 - **`outcomeImportance`** — opt-in autonomous **promotion** loop (off by
   default). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
@@ -184,12 +186,16 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   explicit user corrections ("salah", "sebenarnya", "harusnya", "perbaiki",
   "ulang"), then promotes (`promoteBump`, default 0.02) on success or demotes
   (`demotePenalty`, default 0.05) on failure. Items with failure ratio ≥
-  `failureRatioThreshold` (default 0.5) after `minApplications` (default 3)
+  `failureRatioThreshold` (default 0.5) after `minApplications` (default 5)
   are auto-demoted further. This closes the fitness loop: useful deltas rise,
   harmful ones retire. All mutations are audited, branch-local, and rollbackable
   via `/tree`.
 - **`crossModel`** — enable cross-model shared pool (off by default). When
   enabled, models can opt-in to share items with `ownerModel="shared"`.
+- **`orchestration`** — sub-agent/skill execution mode. `enabled` (default: true)
+  controls whether auto-execution runs. `mode` (default: `"yolo"`) can be
+  `"yolo"` (execute immediately) or `"confirm"` (require explicit approval before
+  first execution of a new/changed skill or subagent).
 
 ## How it works
 
@@ -265,8 +271,8 @@ export async function main(args: { input: string }): Promise<{ output: string }>
 ```
 
 Supported languages: `typescript`/`ts`, `javascript`/`js`, `python`/`py`,
-`shell`/`bash`/`sh`. Executed in a sandboxed temp directory with `tsx`/`node`/
-`python3`/`bash`.
+`shell`/`bash`/`sh`. Executed in a temp directory with `tsx`/`node`/
+`python3`/`bash` (spawn + timeout, no isolation).
 
 ### Orchestrator backends
 
@@ -378,9 +384,9 @@ deltas directly). The propose stage is pluggable via a registry
 | `dedupe` | Rule-based: drops near-duplicate active items (token-overlap ≥ 0.6), keeping the higher-importance one. No model call. |
 
 Select a proposer per run with `/refine --proposer <name>`, or set the default
-for auto-refine via `proposer` in the [config](#configuration). Both paths are
-audited: the `harness-refinement` entry records which proposer ran and how many
-deltas it applied directly.
+for auto-refine via `proposer` (gate) and `escalateProposer` (escalate) in the
+[config](#configuration). Both paths are audited: the `harness-refinement` entry
+records which proposer ran and how many deltas it applied directly.
 
 A dedicated-model proposer — one that makes its own (hidden) LLM call to
 produce deltas directly — is the obvious next alternate. This package still
