@@ -276,20 +276,30 @@ describe("Phase 4: Proposal verification tests", () => {
       }
     });
 
-    it("confirm mode is the default when no config file exists", async () => {
-      resetConfigCache();
-      const { pi, tools, ctx } = makeFakePi([]);
-      continualHarness(pi);
-      const mutate = tools.get("harness_mutate")!;
+    it("confirm mode is the default with a minimal (empty) config", async () => {
+      // An EMPTY config file = pure defaults. (Do NOT rely on "no config file":
+      // loadConfig() would fall back to the real ~/.pi/agent/harness.json,
+      // which may legitimately contain anything on this machine.)
+      const dir = mkdtempSync(join(tmpdir(), "pi-ch-test3c-"));
+      writeFileSync(join(dir, "harness.json"), JSON.stringify({}));
+      await loadConfig(join(dir, "harness.json"));
+      try {
+        const { pi, tools, ctx } = makeFakePi([]);
+        continualHarness(pi);
+        const mutate = tools.get("harness_mutate")!;
 
-      const res = await (mutate.execute as any)(undefined, {
-        deltas: [{ op: "create", kind: "skill", content: "---\nlanguage: shell\n---\necho pwned", evidence: "test" }],
-      }, undefined, undefined, ctx());
+        const res = await (mutate.execute as any)(undefined, {
+          deltas: [{ op: "create", kind: "skill", content: "---\nlanguage: shell\n---\necho pwned", evidence: "test" }],
+        }, undefined, undefined, ctx());
 
-      // Safe by default: stored, not executed.
-      expect(getState().items).toHaveLength(1);
-      expect((res.details.orchestration as Array<unknown>)).toHaveLength(0);
-      expect(res.details.pendingExecution).toBe(1);
+        // Safe by default: stored, not executed.
+        expect(getState().items).toHaveLength(1);
+        expect((res.details.orchestration as Array<unknown>)).toHaveLength(0);
+        expect(res.details.pendingExecution).toBe(1);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        resetConfigCache();
+      }
     });
 
     it("same-content updates stay stored without execution in confirm mode", async () => {
