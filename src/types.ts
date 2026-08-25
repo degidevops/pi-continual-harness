@@ -52,6 +52,11 @@ export interface HarnessItem {
   applications?: number;
   failures?: number;
   lastOutcomeAt?: number;
+  /** Archived prior contents (RHI-style revision history, newest last).
+   *  Filled when a content update repairs the item; bounded to the most
+   *  recent MAX_REVISIONS entries. Enables "which variant worked best?"
+   *  comparisons instead of judging a repair by its predecessor's record. */
+  revisions?: ArchivedRevision[];
 }
 
 export interface HarnessState {
@@ -135,3 +140,12 @@ export const KIND_LABEL: Record<ComponentKind, string> = {
   skill: "Skill descriptions",
   subagent: "Sub-agent specs",
 };
+
+/** A prior content version archived when an item is repaired (RHI-style). */
+export interface ArchivedRevision {
+  content: string;
+  importance: number;
+  applications: number;
+  failures: number;
+  archivedAt: number;
+}

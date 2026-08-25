@@ -59,6 +59,18 @@ menjaga dirinya sendiri sehat tanpa intervensi manual.
       sebelum deteksi — gate tidak lagi memicu dirinya sendiri.
 - [x] Test: echo-only window → tanpa sinyal; merge config `quiet`.
 
+## Tier 5 — Fitur riset v3 (branch `feat/evolution-v3-research`, dari docs/RESEARCH.md)
+
+- [x] **Regression guard ala HCL** (`regression-guard.ts`): batch otonom tidak
+      boleh menghapus item proven (fitness ≥ 0.7) atau mass-delete (> 3).
+      Manual `/harness drop` tetap jalan sebagai escape hatch.
+- [x] **Riwayat revisi + pairwise comparison ala RHI** (`revisions.ts`):
+      perbaikan konten mengarsipkan pendahulu beserta rekam outcomenya
+      (maks 5); `/harness revisions <id>` membandingkan varian berdasarkan
+      success rate; `bestRevision()` stabil-pada-current.
+- [ ] **Candidate selection ala TTHE** (ditunda): butuh infrastruktur
+      generasi kandidat + judge.
+
 ## Definisi selesai
 
 - Semua checkbox Tier 1–2 tercentang, test suite hijau penuh.

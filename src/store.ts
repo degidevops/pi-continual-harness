@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config.js";
-import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState, OwnerModel } from "./types.js";
+import type { AppliedDelta, ArchivedRevision, ComponentKind, Delta, HarnessItem, HarnessState, OwnerModel } from "./types.js";
 
 const STATE_ENTRY = "harness-state";
 const REFINE_ENTRY = "harness-refinement";
@@ -102,6 +102,9 @@ function genDeltaId(): string {
 /** Apply a single delta against the in-memory state. Does not persist.
  *  `actorModel`, when set, stamps creates and restricts update/delete to that
  *  model's items (per-model isolation at the model-facing tool boundary). */
+/** Max archived revisions kept per item (RHI-style bounded history). */
+export const MAX_REVISIONS = 5;
+
 function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
   if (delta.op === "create") {
     const now = Date.now();
@@ -149,6 +152,19 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
     // change archives the counters and starts a fresh trial. Importance/
     // active/evidence-only updates keep history — the behavior didn't change.
     if (contentChanged) {
+      // RHI-style revision archive: the outgoing content + its outcome record
+      // are preserved so repairs can be compared against predecessors later.
+      const archive: ArchivedRevision[] = [
+        ...(before.revisions ?? []),
+        {
+          content: before.content,
+          importance: before.importance,
+          applications: before.applications ?? 0,
+          failures: before.failures ?? 0,
+          archivedAt: Date.now(),
+        },
+      ];
+      after.revisions = archive.slice(-MAX_REVISIONS);
       after.applications = 0;
       after.failures = 0;
       delete (after as { lastOutcomeAt?: number }).lastOutcomeAt;

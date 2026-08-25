@@ -10,6 +10,22 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Evolution v3 research features (branch `feat/evolution-v3-research`)
+
+Implemented on a separate branch for safe development before merging.
+
+- **Regression guard** (`src/regression-guard.ts`, HCL arXiv 2608.19013):
+  model-authored batches can no longer delete proven items (fitness ≥ 0.7) or
+  mass-delete (> 3 items). The batch is rejected with an explanatory result;
+  manual `/harness drop` remains the escape hatch. Directly targets
+  *harness-level forgetting*.
+- **Revision history + pairwise comparison** (`src/revisions.ts`, RHI
+  arXiv 2607.15524): content repairs archive the predecessor with its outcome
+  record (bounded to 5 revisions per item); new `/harness revisions <id>`
+  command compares variants by success rate, and `bestRevision()` prefers
+  clear winners over current content (stability bias).
+- Deferred: TTHE-style candidate selection + judge (needs generation infra).
+
 ### Evolution v2 — from storing facts to evolving how the model acts
 
 - **Process heuristics in refine prompts**: the steering prompt (and signal-gate

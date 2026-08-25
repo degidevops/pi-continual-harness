@@ -43,6 +43,7 @@ import {
 import { loadConfig, resolveDurablePath } from "./config.js";
 import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec } from "./orchestration.js";
 import { trackSubagentRun } from "./subagent-tracking.js";
+import { compareRevisions, bestRevision } from "./revisions.js";
 import type { ComponentKind, HarnessItem } from "./types.js";
 
 export function registerHarness(pi: ExtensionAPI): void {
@@ -50,7 +51,7 @@ export function registerHarness(pi: ExtensionAPI): void {
     description:
       "Durable harness-state I/O + importance hygiene + orchestration + cross-model + outcomes. Subcommands: " +
       "import [--prune] [path] · export [path] · status [path] · " +
-      "prune [--decay <days>] · keep <id> · drop <id> · " +
+      "prune [--decay <days>] · keep <id> · drop <id> · revisions <id> · " + +
       "push-mem [--all|--kind <kind>|--model <provider/id|active>] · " +
       "run-subagent <id> · run-skill <id> · " +
       "cross-model <on|off> · cross-model-optin · cross-model-optout · " +
@@ -73,6 +74,9 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
         case "keep":
           await handleBump(pi, ctx, rest, 0.1, "keep");
+          return;
+        case "revisions":
+          await handleRevisions(pi, ctx, rest);
           return;
         case "drop":
           await handleBump(pi, ctx, rest, -0.1, "drop");
@@ -544,6 +548,37 @@ async function handleDemotionCandidates(
     (i) => `[${i.id}] (importance ${i.importance.toFixed(2)}, apps: ${i.applications ?? 0}, fails: ${i.failures ?? 0}, ratio: ${((i.failures ?? 0) / Math.max(1, i.applications ?? 1)).toFixed(2)}) ${i.content.slice(0, 80)}`,
   );
   ctx.ui.notify(`Demotion candidates:\n${lines.join("\n")}`, "warning");
+}
+
+// ---- Revision comparison (RHI-style) --------------------------------------
+
+async function handleRevisions(
+  _pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const id = rest.find((a) => a && !a.startsWith("-"));
+  if (!id) {
+    ctx.ui.notify(`"/harness revisions" requires an item id.`, "warning");
+    return;
+  }
+  const item = getState().items.find((i) => i.id === id);
+  if (!item) {
+    ctx.ui.notify(`No harness item with id ${id}.`, "warning");
+    return;
+  }
+
+  const rows = compareRevisions(item);
+  const lines = rows.map((r) => {
+    const rate = r.successRate < 0 ? "untested" : `${(r.successRate * 100).toFixed(0)}%`;
+    const mark = r.variant === "current" ? " (current)" : "";
+    return `- ${r.variant}${mark}: ${r.applications} ok / ${r.failures} failed (${rate}) — ${r.content.slice(0, 80)}`;
+  });
+  const best = bestRevision(item);
+  const verdict = best
+    ? `Best measured variant: ${best.variant} (${(best.successRate * 100).toFixed(0)}% success).`
+    : "Item has no outcome history yet.";
+  ctx.ui.notify(`/harness revisions for [${item.id}]:\n${lines.join("\n")}\n${verdict}`, "info");
 }
 
 async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {

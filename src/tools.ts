@@ -9,6 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { applyDeltas, getActiveModelKey, getState, listItems, trackAppliedDeltas, recordOutcome } from "./store.js";
+import { evaluateRegressionGuard } from "./regression-guard.js";
 import { markSteeringActed } from "./refine.js";
 import { executeSubagentSpec, maybeExecuteSkill, parseSubagentSpec, registerDefaultOrchestrator } from "./orchestration.js";
 import { trackSubagentRun } from "./subagent-tracking.js";
@@ -115,6 +116,15 @@ export function registerTools(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const incoming = params.deltas as Delta[];
+      // Regression guard (HCL): model-authored batches may not delete proven
+      // items or mass-delete — that is how harness-level forgetting happens.
+      const guard = evaluateRegressionGuard(incoming, getState().items);
+      if (!guard.ok) {
+        return {
+          content: [{ type: "text", text: `Batch rejected by regression guard:\n${guard.violations.map((v) => `- ${v}`).join("\n")}` }],
+          details: { applied: [], itemCount: getState().items.length, orchestration: [], rejectedByGuard: true },
+        };
+      }
       const applied: AppliedDelta[] = applyDeltas(
         incoming,
         (snapshot, ver) => {
