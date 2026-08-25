@@ -80,7 +80,15 @@ function runSignalGate(ctx: ExtensionContext, lookback: number): string[] {
     if (!text) continue;
     evidenceLines.push(`[${role}] ${text}`);
   }
-  const signals = detectSignals(evidenceLines.join("\n"), lookback);
+  const signals = detectSignals(evidenceLines.join("\n"), lookback, {
+    // tool_error is NOT an autonomous gate signal: ordinary dev output
+    // (vitest/tsc failures) contains "error" and lingers in the lookback
+    // window for dozens of turns, re-triggering refine every cycle — exactly
+    // the background-noise complaint this config set exists to prevent.
+    // Genuine failures still escalate via skill_failure / user_correction /
+    // repetition_loop; manual /refine --proposer signal keeps tool_error.
+    includeToolError: false,
+  });
   // Repair loop (Continual Harness §4.6): stored skills/sub-agents with a
   // net-failing execution record are themselves a failure signature — the
   // refine should target their repair even if this turn was quiet.
@@ -109,8 +117,22 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
       return;
     }
     
-    // STAGE 2: ESCALATE - signals detected, run full refine
-    await notifyOrAudit(pi, ctx, `Auto-refine gate: signals detected [${signals.join(", ")}] — running refine`, "info");
+    // STAGE 2: ESCALATE - signals detected.
+    // QUIET MODE = TRUE BACKGROUND: autonomous refines NEVER inject steering
+    // prompts into the conversation — detected signatures go to the audit
+    // trail instead, and mutation only proceeds for direct-apply proposers
+    // (dedupe etc.). With the default "steering" escalator, quiet mode
+    // records the event and stops; the user acts via /refine when they choose.
+    const escalator = config.escalateProposer ?? "steering";
+    if (await isQuiet()) {
+      pi.appendEntry("harness-event", {
+        msg: `Auto-refine gate: signatures [${signals.join(", ")}] detected — autonomous steering suppressed (quiet mode). Run /refine to act on them.`,
+      });
+      if (escalator === "steering") return;
+      // fall through only for direct-apply proposers (no chat injection)
+    } else {
+      await notifyOrAudit(pi, ctx, `Auto-refine gate: signals detected [${signals.join(", ")}] — running refine`, "info");
+    }
     
     try {
       await runRefine(
@@ -118,7 +140,7 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
         ctx,
         { 
           lookback,
-          commit: config.autoRefine?.commit ?? false, 
+          commit: config.autoRefine?.commit ?? true, 
           ...(config.escalateProposer ? { proposer: config.escalateProposer } : {}) 
         },
         "auto",

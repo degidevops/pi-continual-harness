@@ -149,10 +149,12 @@ describe("Phase 4: Proposal verification tests", () => {
   });
 
   describe("1. Integration test end-to-end default-config", () => {
-    it("tool error triggers steering proposer (not signal) and produces non-generic delta", async () => {
+    it("tool error alone does NOT trigger autonomous refine (background-noise guard)", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-ch-test1-"));
       const cfgFile = join(dir, "harness.json");
-      // Default config: proposer=signal (gate), escalateProposer=steering (escalate)
+      // Default config: gate excludes tool_error as an autonomous signal —
+      // ordinary dev output (vitest/tsc failures) would otherwise re-trigger
+      // refine for dozens of turns.
       writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
       await loadConfig(cfgFile);
       try {
@@ -161,23 +163,12 @@ describe("Phase 4: Proposal verification tests", () => {
 
         // turn 0 seeds baseline
         await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx());
-        expect(sentMessages).toHaveLength(0);
-
-        // turn 1 fires (everyTurns=1) because gate detects tool error
+        // turn 1 elapses cadence, but a lone tool error is NOT a signal
         await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx());
 
-        // Should have sent a steering message (from steering proposer)
-        expect(sentMessages.length).toBeGreaterThanOrEqual(1);
-        const lastMsg = sentMessages[sentMessages.length - 1]!;
-        expect(lastMsg).toContain("/refine");
-        expect(lastMsg).toContain("harness_mutate");
-
-        // Audit entry should record steering proposer (not signal)
+        expect(sentMessages).toHaveLength(0);
         const audits = entries.filter((e) => e.customType === "harness-refinement");
-        expect(audits).toHaveLength(1);
-        expect((audits[0]!.data as { proposer: string }).proposer).toBe("steering");
-        expect((audits[0]!.data as { source: string }).source).toBe("auto");
-        expect((audits[0]!.data as { applied: number }).applied).toBe(0); // steering path applies 0 directly
+        expect(audits).toHaveLength(0);
       } finally {
         rmSync(dir, { recursive: true, force: true });
         resetConfigCache();

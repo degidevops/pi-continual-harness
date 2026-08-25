@@ -102,6 +102,21 @@ export function hasRepetitionLoop(evidence: string): boolean {
  *  FIRST: otherwise the gate re-triggers on its own output forever — the words
  *  "refine", "catat", "harness" appear in every echo, and each cycle's output
  *  becomes the next cycle's "signal". */
+/** All failure signatures present in the evidence window, in stable order.
+ *  Refine-echo lines (prior steering prompts, prior no-op replies) are stripped
+ *  FIRST: otherwise the gate re-triggers on its own output forever.
+ *
+ *  opts.includeToolError (default true): tool_error is meaningful for MANUAL
+ *  /refine --proposer signal runs, but as an AUTONOMOUS gate signal it is a
+ *  false-positive machine in coding sessions — ordinary vitest/tsc output
+ *  contains the word "error" and stays inside the lookback window for dozens
+ *  of turns, re-triggering refine every cycle. The turn_end gate therefore
+ *  passes { includeToolError: false }; genuine failures reach it via
+ *  skill_failure / user_correction / repetition_loop instead. */
+export interface DetectOptions {
+  includeToolError?: boolean;
+}
+
 const ECHO_LINE_RE = /\/refine \(online self-improvement|^\[assistant\] \*\*No-op\*\*/i;
 
 export function stripEchoLines(evidence: string): string {
@@ -111,10 +126,14 @@ export function stripEchoLines(evidence: string): string {
     .join("\n");
 }
 
-export function detectSignals(rawEvidence: string, lookback: number): string[] {
+export function detectSignals(
+  rawEvidence: string,
+  lookback: number,
+  opts: DetectOptions = {},
+): string[] {
   const evidence = stripEchoLines(rawEvidence);
   const signals: string[] = [];
-  if (hasToolError(evidence)) signals.push("tool_error");
+  if (opts.includeToolError !== false && hasToolError(evidence)) signals.push("tool_error");
   if (hasUserCorrection(evidence)) signals.push("user_correction");
   if (hasRepetitionLoop(evidence)) signals.push("repetition_loop");
   if (hasRefineTrigger(evidence)) signals.push("refine_trigger");

@@ -43,6 +43,12 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 - **Anti-self-trigger gate**: `detectSignals` strips refine-echo lines (prior
   steering prompts and no-op replies) before detection — the gate can no longer
   re-trigger on its own output, which was causing endless no-op refine cycles.
+- **`tool_error` removed from the AUTONOMOUS gate** (`includeToolError: false`):
+  ordinary dev output (vitest/tsc failures) contains "error" and lingers in the
+  lookback window for dozens of turns, re-triggering refine every cycle even
+  after restarts. Manual `/refine --proposer signal` still sees tool errors;
+  autonomous escalation now relies on user corrections, repetition loops,
+  skill failures, and explicit requests.
 
 ### Memory / skill / sub-agent systems made real
 

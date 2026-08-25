@@ -139,13 +139,24 @@ describe("session_start reconstruction", () => {
   });
 
   it("stays empty and stays quiet when the branch has no harness-state entry", async () => {
-    const { pi, handlers, ctx, notifications } = makeFakePi([
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
-    ]);
-    continualHarness(pi);
-    await handlers.get("session_start")!({ reason: "startup" }, ctx());
-    expect(getState().items).toHaveLength(0);
-    expect(notifications).toHaveLength(0);
+    // Explicit defaults: never depend on the host's real harness.json
+    // (e.g. its autoImport would import real durable items into this test).
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-empty-"));
+    writeFileSync(join(dir, "harness.json"), JSON.stringify({}));
+    resetConfigCache();
+    await loadConfig(join(dir, "harness.json"));
+    try {
+      const { pi, handlers, ctx, notifications } = makeFakePi([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+      ]);
+      continualHarness(pi);
+      await handlers.get("session_start")!({ reason: "startup" }, ctx());
+      expect(getState().items).toHaveLength(0);
+      expect(notifications).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 
   it("refine evidence includes injected-item attribution (T2.2)", async () => {
@@ -503,11 +514,12 @@ describe("runRefine + auto-refine", () => {
     writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering" }));
     await loadConfig(cfgFile); // populate the in-process config cache (deterministic)
     try {
-      // Branch with a tool error signal (triggers gate) - included as tool message
+      // Branch with a genuine signal (user correction — tool errors are
+      // deliberately NOT autonomous signals to avoid background noise)
       const branch = [
         { type: "message", message: { role: "user", content: [{ type: "text", text: "run test" }] } },
         { type: "message", message: { role: "assistant", content: [{ type: "text", text: "running test" }] } },
-        { type: "message", message: { role: "tool", content: [{ type: "text", text: "bash: command failed (isError: true)" }] } },
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "sebenarnya cara itu salah, ulangi dengan pendekatan lain" }] } },
       ];
       const { pi, handlers, ctx, sentMessages, entries } = makeFakePi(branch);
       continualHarness(pi); // turn_end on the fake = auto-refine (last registered)
@@ -560,11 +572,11 @@ describe("runRefine + auto-refine", () => {
     writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering" }));
     await loadConfig(cfgFile);
     try {
-      // Branch with tool error signal (triggers gate) - included as tool message
+      // Branch with a genuine signal (user correction) - see gate rationale above
       const { pi, handlers, ctx, sentMessages } = makeFakePi([
         { type: "message", message: { role: "user", content: [{ type: "text", text: "run test" }] } },
         { type: "message", message: { role: "assistant", content: [{ type: "text", text: "running test" }] } },
-        { type: "message", message: { role: "tool", content: [{ type: "text", text: "bash: command failed (isError: true)" }] } },
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "sebenarnya cara itu salah, ulangi dengan pendekatan lain" }] } },
       ]);
       continualHarness(pi);
 
