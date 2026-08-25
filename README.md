@@ -192,7 +192,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "crossModel": { "enabled": false },
   "autoImport": { "enabled": false },
   "consolidate": { "enabled": false, "everyTurns": 25 },
-  "quiet": false,
+  "quiet": true,
   "orchestration": { "enabled": true, "mode": "confirm" }
 }
 ```
@@ -257,10 +257,11 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   every `everyTurns` turns, run the dedupe proposer (remove near-duplicate
   items) then decay/prune (drop items below the importance floor). Audited and
   rollbackable like every other mutation. Off by default.
-- **`quiet`** — background operation (default false). When true, informational
+- **`quiet`** — background operation (**true by default**). Informational
   messages from AUTONOMOUS paths are demoted to audited `harness-event` session
   entries instead of popping up in the chat; warnings/errors and manual command
-  feedback always stay visible.
+  feedback always stay visible. Set false only if you want verbose per-cycle
+  notifications.
 - **`orchestration`** — sub-agent/skill execution. `enabled` (default: true)
   gates all execution; when false nothing runs, not even manual commands.
   `mode` (default: `"confirm"`) controls auto-execution by `harness_mutate`:

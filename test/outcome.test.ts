@@ -99,7 +99,7 @@ describe("registerOutcome handler", () => {
   async function setConfig(enabled: boolean, bump = 0.05): Promise<void> {
     dir = mkdtempSync(join(tmpdir(), "pi-ch-outcome-"));
     const cfgFile = join(dir, "harness.json");
-    writeFileSync(cfgFile, JSON.stringify({ outcomeImportance: { enabled, bump } }));
+    writeFileSync(cfgFile, JSON.stringify({ outcomeImportance: { enabled, bump }, quiet: false }));
     await loadConfig(cfgFile); // populate the in-process cache (deterministic)
   }
 

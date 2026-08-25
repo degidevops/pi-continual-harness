@@ -124,7 +124,7 @@ describe("session_start reconstruction", () => {
     // Explicit default-verbosity config: never depend on the host's real
     // harness.json (which may legitimately set "quiet": true).
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-restore-"));
-    writeFileSync(join(dir, "harness.json"), JSON.stringify({}));
+    writeFileSync(join(dir, "harness.json"), JSON.stringify({ quiet: false }));
     resetConfigCache();
     await loadConfig(join(dir, "harness.json"));
     try {
@@ -194,7 +194,7 @@ describe("session_start reconstruction", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-autoimport-"));
     const cfgFile = join(dir, "harness.json");
     // Project-scoped durable path derived from cwd; autoImport on.
-    writeFileSync(cfgFile, JSON.stringify({ autoImport: { enabled: true }, durableScope: "project" }));
+    writeFileSync(cfgFile, JSON.stringify({ autoImport: { enabled: true }, durableScope: "project", quiet: false }));
     // Drop any config cached by earlier tests, or loadConfig would ignore this file.
     resetConfigCache();
     await loadConfig(cfgFile);
@@ -511,7 +511,7 @@ describe("runRefine + auto-refine", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-auto-"));
     const cfgFile = join(dir, "harness.json");
     // Use steering proposer so we can check for steering message in sentMessages
-    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering" }));
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering", quiet: false }));
     await loadConfig(cfgFile); // populate the in-process config cache (deterministic)
     try {
       // Branch with a genuine signal (user correction — tool errors are
@@ -569,7 +569,7 @@ describe("runRefine + auto-refine", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-reset-"));
     const cfgFile = join(dir, "harness.json");
     // Use steering proposer so we can check for steering message in sentMessages
-    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering" }));
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 }, proposer: "steering", quiet: false }));
     await loadConfig(cfgFile);
     try {
       // Branch with a genuine signal (user correction) - see gate rationale above

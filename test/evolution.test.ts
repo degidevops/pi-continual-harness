@@ -234,9 +234,9 @@ describe("quiet background operation", () => {
     expect(detectSignals(mixed, 10)).toContain("user_correction");
   });
 
-  it("quiet flag merges from harness.json (default false)", async () => {
+  it("quiet is TRUE by default (background operation); opt-out restores verbose", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-quiet-"));
-    writeFileSync(join(dir, "harness.json"), JSON.stringify({ quiet: true }));
+    writeFileSync(join(dir, "harness.json"), JSON.stringify({}));
     resetConfigCache();
     await loadConfig(join(dir, "harness.json"));
     try {
@@ -244,7 +244,7 @@ describe("quiet background operation", () => {
 
       const dir2 = mkdtempSync(join(tmpdir(), "pi-ch-quiet2-"));
       try {
-        writeFileSync(join(dir2, "harness.json"), JSON.stringify({}));
+        writeFileSync(join(dir2, "harness.json"), JSON.stringify({ quiet: false }));
         resetConfigCache();
         await loadConfig(join(dir2, "harness.json"));
         expect(await isQuiet()).toBe(false);
