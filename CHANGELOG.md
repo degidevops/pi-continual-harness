@@ -32,6 +32,18 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   "failed because X was missing" (create new). Also restores the previously
   lost "items flagged for repair" evidence section.
 
+### Quiet background operation
+
+- **New `"quiet": true` config**: autonomous paths (auto-refine escalation,
+  outcome loops, consolidation, sub-agent outcomes, session restores) demote
+  informational messages to audited `harness-event` entries instead of chat
+  popups; the every-turn gate status flash is skipped; auto-refine info
+  notifications are suppressed while warnings/errors and manual command
+  feedback stay visible. Default false.
+- **Anti-self-trigger gate**: `detectSignals` strips refine-echo lines (prior
+  steering prompts and no-op replies) before detection — the gate can no longer
+  re-trigger on its own output, which was causing endless no-op refine cycles.
+
 ### Memory / skill / sub-agent systems made real
 
 - **Progressive disclosure for skills**: executable skills render only their

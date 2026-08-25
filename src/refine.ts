@@ -22,6 +22,7 @@ import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, exportDurable, getFailingItems, getState, modelKey, REFINE_ENTRY, snapshotState, getLastReviewedIndex, getLastReviewedTurn, setReviewCursor } from "./store.js";
 import { skillPromptLine } from "./orchestration.js";
 import { getLastInjectedIds } from "./inject.js";
+import { loadConfig } from "./config.js";
 import { getProposer } from "./proposer.js";
 import type { CompleteOptions, CompleteResult, ProposeResult, ProposedDelta } from "./proposer.js";
 
@@ -120,6 +121,14 @@ export async function runRefine(
   const lookback = options.lookback ?? DEFAULT_LOOKBACK_TURNS;
   const commit = options.commit ?? false;
   const proposer = getProposer(options.proposer);
+  // Quiet mode: AUTONOMOUS refines work silently — informational notifications
+  // become audited harness-event entries instead of popping up in the session.
+  // Manual /refine (source: "manual") and all warnings/errors stay visible.
+  const silent = source === "auto" && (await loadConfig()).quiet === true;
+  const inform = (msg: string): void => {
+    if (!silent) ctx.ui.notify(msg, "info");
+    else pi.appendEntry("harness-event", { msg });
+  };
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback, messages);
@@ -181,7 +190,7 @@ export async function runRefine(
         (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }),
       );
       applied = appliedDeltas.length;
-      ctx.ui.notify(`Proposer "${proposer.name}" applied ${applied} delta(s) directly.`, "info");
+      inform(`Proposer "${proposer.name}" applied ${applied} delta(s) directly.`);
     } catch (err) {
       applyError = (err as Error).message;
       ctx.ui.notify(
@@ -223,7 +232,7 @@ export async function runRefine(
     // against the same view pi-reflect / pi-mem would see.
     try {
       const path = await exportDurable();
-      ctx.ui.notify(`Durable state exported to ${path}`, "info");
+      inform(`Durable state exported to ${path}`);
     } catch (err) {
       ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
     }

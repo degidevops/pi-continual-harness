@@ -97,8 +97,22 @@ export function hasRepetitionLoop(evidence: string): boolean {
   return false;
 }
 
-/** All failure signatures present in the evidence window, in stable order. */
-export function detectSignals(evidence: string, lookback: number): string[] {
+/** All failure signatures present in the evidence window, in stable order.
+ *  Refine-echo lines (prior steering prompts, prior no-op replies) are stripped
+ *  FIRST: otherwise the gate re-triggers on its own output forever — the words
+ *  "refine", "catat", "harness" appear in every echo, and each cycle's output
+ *  becomes the next cycle's "signal". */
+const ECHO_LINE_RE = /\/refine \(online self-improvement|^\[assistant\] \*\*No-op\*\*/i;
+
+export function stripEchoLines(evidence: string): string {
+  return evidence
+    .split("\n")
+    .filter((l) => !ECHO_LINE_RE.test(l))
+    .join("\n");
+}
+
+export function detectSignals(rawEvidence: string, lookback: number): string[] {
+  const evidence = stripEchoLines(rawEvidence);
   const signals: string[] = [];
   if (hasToolError(evidence)) signals.push("tool_error");
   if (hasUserCorrection(evidence)) signals.push("user_correction");

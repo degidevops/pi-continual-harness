@@ -121,10 +121,21 @@ describe("session_start reconstruction", () => {
     const { pi, handlers, ctx, notifications } = makeFakePi(branch);
     continualHarness(pi);
 
-    await handlers.get("session_start")!({ reason: "startup" }, ctx());
+    // Explicit default-verbosity config: never depend on the host's real
+    // harness.json (which may legitimately set "quiet": true).
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-restore-"));
+    writeFileSync(join(dir, "harness.json"), JSON.stringify({}));
+    resetConfigCache();
+    await loadConfig(join(dir, "harness.json"));
+    try {
+      await handlers.get("session_start")!({ reason: "startup" }, ctx());
 
-    expect(getState().items.map((i) => i.id)).toEqual(["h_1"]);
-    expect(notifications.some((n) => /1 item\(s\) restored/.test(n.msg))).toBe(true);
+      expect(getState().items.map((i) => i.id)).toEqual(["h_1"]);
+      expect(notifications.some((n) => /1 item\(s\) restored/.test(n.msg))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 
   it("stays empty and stays quiet when the branch has no harness-state entry", async () => {

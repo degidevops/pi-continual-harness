@@ -78,6 +78,12 @@ export interface HarnessConfig {
     enabled?: boolean;
     everyTurns?: number;
   };
+  /** Quiet background operation: informational messages from AUTONOMOUS paths
+   *  (auto-refine, outcome loops, consolidation, session restores) are demoted
+   *  to audited `harness-event` entries instead of popping up in the session.
+   *  Warnings/errors and manual command feedback always stay visible.
+   *  Default false (normal verbosity). */
+  quiet?: boolean;
   /** Sub-agent/skill orchestration execution.
    *  - enabled=false        → nothing executes (not even manual /harness commands).
    *  - mode="confirm"       → items are stored but NEVER auto-executed by
@@ -123,6 +129,9 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   // Consolidation (dedupe + decay/prune) stays manual (/harness commands)
   // unless opted in — autonomous store mutation on a cadence.
   consolidate: { enabled: false, everyTurns: DEFAULT_CONSOLIDATE_EVERY_TURNS },
+  // Normal verbosity by default; "quiet": true makes autonomous paths silent
+  // (audit-only) while keeping warnings/errors and manual feedback visible.
+  quiet: false,
   // Safe by default: model-authored skills/sub-agents are stored but never
   // executed without an explicit user command (/harness run-skill|run-subagent).
   // Opt into full-auto with { "orchestration": { "mode": "yolo" } }.
@@ -183,6 +192,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       enabled: (over.consolidate?.enabled ?? co.enabled) as boolean,
       everyTurns: (over.consolidate?.everyTurns ?? co.everyTurns) as number,
     },
+    quiet: over.quiet === true,
     orchestration: {
       enabled: (over.orchestration?.enabled ?? orc.enabled) as boolean,
       mode: (over.orchestration?.mode === "yolo" ? "yolo" : "confirm") as "yolo" | "confirm",

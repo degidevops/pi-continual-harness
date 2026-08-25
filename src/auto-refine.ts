@@ -29,6 +29,7 @@ import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./conf
 import { DEFAULT_LOOKBACK_TURNS, runRefine } from "./refine.js";
 import { detectSignals } from "./signals.js";
 import { getFailingItems } from "./store.js";
+import { isQuiet, notifyOrAudit } from "./quiet.js";
 
 // turnIndex of the last auto-refine (or the seeded baseline). -1 = unseen.
 let lastTurn = -1;
@@ -99,15 +100,17 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
     const signals = runSignalGate(ctx, lookback);
     
     if (signals.length === 0) {
-      // No signals detected - skip expensive refine, but log for visibility
-      ctx.ui.setStatus("harness", `Auto-refine gate: no signals, skipping refine`);
-      // Clear status after a moment
-      setTimeout(() => ctx.ui.setStatus("harness", undefined), 2000);
+      // No signals detected - skip expensive refine. Quiet mode: no status
+      // flash at all (this fires every turn and would otherwise be noise).
+      if (!(await isQuiet())) {
+        ctx.ui.setStatus("harness", `Auto-refine gate: no signals, skipping refine`);
+        setTimeout(() => ctx.ui.setStatus("harness", undefined), 2000);
+      }
       return;
     }
     
     // STAGE 2: ESCALATE - signals detected, run full refine
-    ctx.ui.notify(`Auto-refine gate: signals detected [${signals.join(", ")}] — running refine`, "info");
+    await notifyOrAudit(pi, ctx, `Auto-refine gate: signals detected [${signals.join(", ")}] — running refine`, "info");
     
     try {
       await runRefine(

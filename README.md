@@ -150,10 +150,12 @@ What each switch does in this preset:
 - `autoRefine` — every turn, the failure-signature gate runs; high-signal turns
   escalate to a targeted refine, and `commit: true` flushes durable state so
   gains survive into the next session.
-- `outcomeImportance` + `outcomeEvaluation` — the fitness loop is fully live:
-  cited items gain importance; deltas are promoted/demoted by measured outcomes.
 - `consolidate: everyTurns 25` — store hygiene runs itself: near-duplicates get
   merged away and stale items pruned on a cadence (opt into your config).
+- `quiet: true` — the harness works in the background: informational messages
+  from autonomous paths (auto-refine, outcome loops, consolidation, restores)
+  are demoted to audited `harness-event` entries instead of popping up in the
+  session. Warnings/errors and manual command feedback always stay visible.
 - `autoImport` — at session start, the durable file merges back in automatically:
   yesterday's refinements are live from turn one (bootstrap-updating > frozen).
 - `orchestration.mode: "yolo"` — model-authored skills/sub-agents execute
@@ -190,6 +192,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "crossModel": { "enabled": false },
   "autoImport": { "enabled": false },
   "consolidate": { "enabled": false, "everyTurns": 25 },
+  "quiet": false,
   "orchestration": { "enabled": true, "mode": "confirm" }
 }
 ```
@@ -254,6 +257,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   every `everyTurns` turns, run the dedupe proposer (remove near-duplicate
   items) then decay/prune (drop items below the importance floor). Audited and
   rollbackable like every other mutation. Off by default.
+- **`quiet`** — background operation (default false). When true, informational
+  messages from AUTONOMOUS paths are demoted to audited `harness-event` session
+  entries instead of popping up in the chat; warnings/errors and manual command
+  feedback always stay visible.
 - **`orchestration`** — sub-agent/skill execution. `enabled` (default: true)
   gates all execution; when false nothing runs, not even manual commands.
   `mode` (default: `"confirm"`) controls auto-execution by `harness_mutate`:

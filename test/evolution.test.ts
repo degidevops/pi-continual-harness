@@ -3,6 +3,9 @@
 // Grounded in Continual Harness (arXiv 2605.09998) §3.2/§4.6 and ACE.
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   detectSignals,
   hasRepetitionLoop,
@@ -35,6 +38,8 @@ import {
   resetConsolidation,
 } from "../src/consolidate.js";
 import type { HarnessConfig } from "../src/config.js";
+import { loadConfig, resetConfigCache } from "../src/config.js";
+import { isQuiet } from "../src/quiet.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { HarnessItem } from "../src/types.js";
 
@@ -209,6 +214,48 @@ describe("auto-consolidation (consolidate.ts)", () => {
     expect(res.pruned).toBe(1); // below-floor junk dropped
     expect(getState().items).toHaveLength(1);
     expect(getState().items[0]!.content).toContain("always run npm test");
+  });
+});
+
+describe("quiet background operation", () => {
+  it("echo-only evidence windows produce NO signals (anti-self-trigger)", () => {
+    const echo = [
+      "[user] /refine (online self-improvement, last 25 turns as evidence) review everything",
+      "[assistant] **No-op** (echo-window policy). Store: 6 item aktif.",
+    ].join("\n");
+    expect(detectSignals(echo, 10)).toEqual([]);
+  });
+
+  it("genuine user correction still fires after echo stripping", () => {
+    const mixed = [
+      "[user] /refine (online self-improvement) old prompt",
+      "[user] sebenarnya cara tadi salah",
+    ].join("\n");
+    expect(detectSignals(mixed, 10)).toContain("user_correction");
+  });
+
+  it("quiet flag merges from harness.json (default false)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-quiet-"));
+    writeFileSync(join(dir, "harness.json"), JSON.stringify({ quiet: true }));
+    resetConfigCache();
+    await loadConfig(join(dir, "harness.json"));
+    try {
+      expect(await isQuiet()).toBe(true);
+
+      const dir2 = mkdtempSync(join(tmpdir(), "pi-ch-quiet2-"));
+      try {
+        writeFileSync(join(dir2, "harness.json"), JSON.stringify({}));
+        resetConfigCache();
+        await loadConfig(join(dir2, "harness.json"));
+        expect(await isQuiet()).toBe(false);
+      } finally {
+        rmSync(dir2, { recursive: true, force: true });
+        resetConfigCache();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 });
 

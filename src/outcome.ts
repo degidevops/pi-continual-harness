@@ -27,6 +27,7 @@ import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
 import { bumpImportance, getState, modelKey, evaluatePendingOutcomes } from "./store.js";
 import { reconcileSubagentRuns } from "./subagent-tracking.js";
 import { evaluateConsolidation, runConsolidation } from "./consolidate.js";
+import { notifyOrAudit } from "./quiet.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
 type AnyEntry = {
@@ -100,9 +101,10 @@ export function registerOutcome(pi: ExtensionAPI): void {
                 if (item) bumped += 1;
               }
               if (bumped > 0) {
-                ctx.ui.notify(
+                await notifyOrAudit(
+                  pi,
+                  ctx,
                   `Outcome: +${bump} importance for ${bumped} referenced item(s): ${refs.join(", ")}`,
-                  "info",
                 );
               }
             }
@@ -119,7 +121,9 @@ export function registerOutcome(pi: ExtensionAPI): void {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });
       if (result.promoted > 0 || result.demoted > 0) {
-        ctx.ui.notify(
+        await notifyOrAudit(
+          pi,
+          ctx,
           `Outcome eval: ${result.promoted} promoted, ${result.demoted} demoted`,
           result.demoted > 0 ? "warning" : "info",
         );
@@ -134,7 +138,9 @@ export function registerOutcome(pi: ExtensionAPI): void {
       pi.appendEntry("harness-state", { state: snapshot, version: ver });
     });
     if (runs.resolved > 0) {
-      ctx.ui.notify(
+      await notifyOrAudit(
+        pi,
+        ctx,
         `Subagent outcome: ${runs.successes} succeeded, ${runs.failures} failed (recorded).`,
         runs.failures > 0 ? "warning" : "info",
       );
@@ -148,9 +154,10 @@ export function registerOutcome(pi: ExtensionAPI): void {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });
       if (res.merged > 0 || res.pruned > 0) {
-        ctx.ui.notify(
+        await notifyOrAudit(
+          pi,
+          ctx,
           `Consolidated harness: ${res.merged} duplicate(s) removed, ${res.pruned} stale item(s) pruned.`,
-          "info",
         );
       }
     }

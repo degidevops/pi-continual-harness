@@ -49,6 +49,16 @@ menjaga dirinya sendiri sehat tanpa intervensi manual.
 - Dedupe semantik berbasis embedding (biaya model call — bertentangan dengan
   prinsip gate murah; tunda sampai pola jelas)
 
+## Tier 4 — Operasi latar belakang (quiet mode)
+
+- [x] **Quiet background operation**: config `"quiet": true` — info otomatis
+      (auto-refine, outcome loops, konsolidasi, restore) turun menjadi entri
+      audit `harness-event`; warning/error & feedback perintah manual tetap
+      tampil; status-flash gate tiap turn dilewati.
+- [x] **Anti-self-trigger**: `detectSignals` menyaring gema steering/no-op
+      sebelum deteksi — gate tidak lagi memicu dirinya sendiri.
+- [x] Test: echo-only window → tanpa sinyal; merge config `quiet`.
+
 ## Definisi selesai
 
 - Semua checkbox Tier 1–2 tercentang, test suite hijau penuh.

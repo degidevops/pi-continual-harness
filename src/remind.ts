@@ -8,6 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
 import { markSteeringActed, pendingSteeringOlderThan } from "./refine.js";
+import { isQuiet } from "./quiet.js";
 
 // turnIndex of the last reminder (or the baseline we seeded from). -1 = unseen.
 let lastTurn = -1;
@@ -51,9 +52,11 @@ export function registerReminder(pi: ExtensionAPI): void {
       );
     }
 
-    // (b) Cadence reminder (opt-in).
+    // (b) Cadence reminder (opt-in) — silenced under quiet mode; the steering
+    // follow-through warning above intentionally still shows.
     const config = await loadConfig();
     if (!evaluateReminder(config, event.turnIndex)) return;
+    if (await isQuiet()) return;
     const every = config.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS;
     ctx.ui.notify(
       `${every} turns since the last check — consider running /refine to refine harness state.`,

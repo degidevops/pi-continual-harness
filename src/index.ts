@@ -25,6 +25,7 @@ import { registerOutcome, resetOutcome } from "./outcome.js";
 import { resetConsolidation } from "./consolidate.js";
 import { getState, reconstruct, reconstructFromDurable, setActiveModelKey, STATE_ENTRY } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
+import { notifyOrAudit } from "./quiet.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
   // Rebuild in-memory state from the current branch on every session start /
@@ -54,9 +55,10 @@ export default function continualHarness(pi: ExtensionAPI): void {
           pi.appendEntry("harness-state", { state: snapshot, version: ver });
         });
         if (!res.missingFile && (res.created > 0 || res.updated > 0)) {
-          ctx.ui.notify(
+          await notifyOrAudit(
+            pi,
+            ctx,
             `Continual Harness: auto-imported ${res.created} created, ${res.updated} updated from ${path}`,
-            "info",
           );
         }
       } catch (err) {
@@ -65,7 +67,7 @@ export default function continualHarness(pi: ExtensionAPI): void {
     }
     const n = getState().items.length;
     if (n > 0) {
-      ctx.ui.notify(`Continual Harness: ${n} item(s) restored`, "info");
+      await notifyOrAudit(pi, ctx, `Continual Harness: ${n} item(s) restored`);
     }
   });
 
